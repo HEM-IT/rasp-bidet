@@ -1,0 +1,7 @@
+# gpio_controller 의존성 (Mac/PC에서 GPIO_SIMULATION=1 테스트 시 최소)
+requests>=2.28.0
+
+# 라즈베리파이 실기에서 사용 (선택, 시뮬레이션에서는 불필요)
+# RPi.GPIO
+# adafruit-circuitpython-ssd1306
+# Pillow

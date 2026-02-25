@@ -1,0 +1,23 @@
+# 라즈베리파이 부팅 후 HEM WiFi/MQTT 서비스
+# 1) WiFi 연결 확인 → 연결 시 start.sh 실행
+# 2) 미연결 시 AP 모드 + Flask 설정 페이지 → 사용자 SSID 등록 후 STA 전환 및 재부팅
+# 설치: mqtt_subscriber/sys/ 에서 sudo ./install-wifi-service.sh
+# BASE_DIR 은 설치 시 mqtt_subscriber 최상위 경로로 치환됨
+
+[Unit]
+Description=HEM WiFi check and MQTT Subscriber (or AP config)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=BASE_DIR
+ExecStart=BASE_DIR/sys/wifi-boot.sh
+Restart=no
+# WiFi/AP 설정을 위해 root 실행 (wpa_supplicant, hostapd, dnsmasq, reboot)
+User=root
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

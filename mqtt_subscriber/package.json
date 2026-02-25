@@ -1,0 +1,14 @@
+{
+  "name": "mqtt_subscriber",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HEM mock MQTT subscriber (Raspberry Pi 배포 대상) - 명령 수신 후 gpio_controller 실행",
+  "main": "subscriber.js",
+  "scripts": {
+    "start": "node subscriber.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "mqtt": "^5.3.1"
+  }
+}

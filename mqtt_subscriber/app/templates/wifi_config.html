@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HEM WiFi 설정</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      margin: 0;
+      padding: 24px;
+      background: #1a1a2e;
+      color: #eee;
+      min-height: 100vh;
+    }
+    .container {
+      max-width: 420px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 1.4rem;
+      margin-bottom: 8px;
+    }
+    .sub {
+      color: #888;
+      font-size: 0.9rem;
+      margin-bottom: 24px;
+    }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 0.9rem;
+    }
+    input, select {
+      width: 100%;
+      padding: 12px;
+      margin-bottom: 16px;
+      border: 1px solid #444;
+      border-radius: 8px;
+      background: #16213e;
+      color: #eee;
+      font-size: 1rem;
+    }
+    input::placeholder { color: #666; }
+    button {
+      width: 100%;
+      padding: 14px;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    .btn-validate {
+      background: #0f3460;
+      color: #eee;
+      margin-bottom: 10px;
+    }
+    .btn-validate:hover { background: #1a4a7a; }
+    .btn-submit {
+      background: #e94560;
+      color: #fff;
+    }
+    .btn-submit:hover { background: #ff6b6b; }
+    .btn-submit:disabled { opacity: 0.5; cursor: not-allowed; }
+    .msg {
+      padding: 10px 12px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 0.9rem;
+    }
+    .msg.error { background: #3d1a1a; color: #f88; }
+    .msg.success { background: #1a3d2a; color: #8f8; }
+    .msg.info { background: #1a2a3d; color: #8af; }
+    #ssidList { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>HEM WiFi 설정</h1>
+    <p class="sub">연결할 공유기의 SSID와 비밀번호를 입력하세요.</p>
+
+    <div id="msg" class="msg info" role="alert"></div>
+
+    <label for="ssid">SSID (네트워크 이름)</label>
+    <input type="text" id="ssid" name="ssid" placeholder="공유기 이름 입력" autocomplete="off">
+    <div id="ssidList"></div>
+
+    <label for="password">비밀번호</label>
+    <input type="password" id="password" name="password" placeholder="WiFi 비밀번호" autocomplete="off">
+
+    <button type="button" class="btn-validate" id="btnValidate">SSID 검증</button>
+    <button type="button" class="btn-submit" id="btnSubmit">등록 후 재부팅</button>
+  </div>
+
+  <script>
+    (function () {
+      const msgEl = document.getElementById('msg');
+      const ssidEl = document.getElementById('ssid');
+      const passwordEl = document.getElementById('password');
+      const btnValidate = document.getElementById('btnValidate');
+      const btnSubmit = document.getElementById('btnSubmit');
+      let scanSsids = [];
+
+      function showMsg(text, type) {
+        msgEl.textContent = text;
+        msgEl.className = 'msg ' + (type || 'info');
+        msgEl.style.display = text ? 'block' : 'none';
+      }
+
+      function setValidated(valid) {
+        ssidEl.dataset.validated = valid ? '1' : '0';
+      }
+
+      // 스캔 목록 로드
+      fetch('/api/scan')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          scanSsids = data.ssids || [];
+          if (scanSsids.length > 0) {
+            showMsg('주변 SSID ' + scanSsids.length + '개 로드됨. 입력 후 "SSID 검증"을 누르세요.', 'info');
+          } else {
+            showMsg('스캔 목록이 없습니다. SSID를 직접 입력한 뒤 등록할 수 있습니다.', 'info');
+          }
+        })
+        .catch(function () {
+          showMsg('SSID 목록을 불러올 수 없습니다. 직접 입력 후 등록해 보세요.', 'info');
+        });
+
+      // SSID 검증
+      btnValidate.addEventListener('click', function () {
+        const ssid = ssidEl.value.trim();
+        if (!ssid) {
+          showMsg('SSID를 입력하세요.', 'error');
+          setValidated(false);
+          return;
+        }
+        fetch('/api/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ssid: ssid })
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (data.ok) {
+              showMsg('SSID 검증 성공: "' + ssid + '"', 'success');
+              setValidated(true);
+            } else {
+              showMsg(data.error || '검증 실패', 'error');
+              setValidated(false);
+            }
+          })
+          .catch(function () {
+            showMsg('검증 요청 실패', 'error');
+            setValidated(false);
+          });
+      });
+
+      // 등록 후 재부팅
+      btnSubmit.addEventListener('click', function () {
+        const ssid = ssidEl.value.trim();
+        const password = passwordEl.value;
+
+        if (!ssid) {
+          showMsg('SSID를 입력하세요.', 'error');
+          return;
+        }
+        if (scanSsids.length > 0 && scanSsids.indexOf(ssid) === -1) {
+          showMsg('스캔 목록에 없는 SSID입니다. 먼저 "SSID 검증"을 통과하거나, 목록에 있는 SSID를 선택하세요.', 'error');
+          return;
+        }
+
+        btnSubmit.disabled = true;
+        showMsg('등록 중...', 'info');
+
+        fetch('/api/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ssid: ssid, password: password })
+        })
+          .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
+          .then(function (res) {
+            if (res.body.ok) {
+              showMsg(res.body.message || '등록 완료. 재부팅됩니다.', 'success');
+            } else {
+              showMsg(res.body.error || '등록 실패', 'error');
+              btnSubmit.disabled = false;
+            }
+          })
+          .catch(function () {
+            showMsg('등록 요청 실패', 'error');
+            btnSubmit.disabled = false;
+          });
+      });
+    })();
+  </script>
+</body>
+</html>
