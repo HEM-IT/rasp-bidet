@@ -11,10 +11,14 @@
 
 """
 import gc
+import logging
 import os
 import time
 from datetime import datetime
 from collections import OrderedDict
+
+# 모듈 로거 (단계별 log 호출용)
+log = logging.getLogger(__name__)
 
 try:
     from utils import filter as legacy_filter
@@ -54,6 +58,8 @@ CAPTURE_IDX_OFFSETS = tuple(int(x.strip()) for x in _def_capture_idx.split(",") 
 if len(CAPTURE_IDX_OFFSETS) < 3:
     CAPTURE_IDX_OFFSETS = (30, 60, 120)  # fallback
 
+log.debug("gas_controller constants loaded: BM_TIME=%s, END_TR=%s, CAPTURE_IDX_OFFSETS=%s", BM_TIME, END_TR, CAPTURE_IDX_OFFSETS)
+
 
 def filter_voltage(voltage, b_prev, alpha=0.1):
     """
@@ -62,19 +68,24 @@ def filter_voltage(voltage, b_prev, alpha=0.1):
     :return: (filtered_v, b_new, a_new) — b_new는 다음 스텝의 b_prev로 사용
     """
     filtered = alpha * float(voltage) + (1.0 - alpha) * float(b_prev)
+    log.debug("filter_voltage: voltage=%.4f b_prev=%.4f alpha=%.2f -> filtered=%.4f", voltage, b_prev, alpha, filtered)
     return filtered, filtered, alpha
 
 
 def voltage_to_ppm_h2s(voltage):
     """H2S 전압 → PPM (원본 공식)."""
     v = float(voltage) - VOLTAGE_OFFSET
-    return (v * 1e6) / H2S_DIVISOR if H2S_DIVISOR else 0.0
+    ppm = (v * 1e6) / H2S_DIVISOR if H2S_DIVISOR else 0.0
+    log.debug("voltage_to_ppm_h2s: voltage=%.4f -> ppm=%.4f", voltage, ppm)
+    return ppm
 
 
 def voltage_to_ppm_vocs(voltage):
     """VOCs 전압 → PPM (원본 공식)."""
     v = float(voltage) - VOLTAGE_OFFSET
-    return (v * 1e6) / VOCS_DIVISOR if VOCS_DIVISOR else 0.0
+    ppm = (v * 1e6) / VOCS_DIVISOR if VOCS_DIVISOR else 0.0
+    log.debug("voltage_to_ppm_vocs: voltage=%.4f -> ppm=%.4f", voltage, ppm)
+    return ppm
 
 
 def smooth_peak_h2s(H2S_raw_ppm, idx):
@@ -84,11 +95,13 @@ def smooth_peak_h2s(H2S_raw_ppm, idx):
     :param idx: 중간 인덱스 (temp_stt)
     """
     if idx < 1 or idx + 1 >= len(H2S_raw_ppm):
+        log.debug("smooth_peak_h2s: idx=%s out of range, skip", idx)
         return
     a, b, c = H2S_raw_ppm[idx - 1], H2S_raw_ppm[idx], H2S_raw_ppm[idx + 1]
     if (b - a) * (c - b) < 0 and abs(c - a) < STABLE_THRE:
         if abs(b - a) * abs(b - c) > 0.005 * 0.005:
             H2S_raw_ppm[idx] = a
+            log.debug("smooth_peak_h2s: idx=%s peak removed (%.4f -> %.4f)", idx, b, a)
 
 
 def update_feces_st(idx, H2S_raw_ppm, noise_1_list, noise_5_list, feces_st, BM_time=None):
@@ -137,17 +150,22 @@ def update_feces_st(idx, H2S_raw_ppm, noise_1_list, noise_5_list, feces_st, BM_t
         if noise_5_list[temp_stt] > NOISE_5_THRESHOLD:
             feces_st = idx - 2
 
+    if feces_st != 0:
+        log.info("update_feces_st: feces_st detected idx=%s -> feces_st=%s (noise_1=%.4f noise_5=%.4f)", idx, feces_st, noise_1_list[temp_stt], noise_5_list[temp_stt] if temp_stt < len(noise_5_list) else 0)
     return feces_st, noise_1_list, noise_5_list
 
 
 def _trapz(y, x):
     """사다리꼴 적분. numpy 없으면 수동 계산."""
     if _HAS_NUMPY:
-        return float(np.trapz(y, x))
-    s = 0.0
-    for i in range(1, len(y)):
-        s += (x[i] - x[i - 1]) * (y[i] + y[i - 1]) / 2.0
-    return s
+        result = float(np.trapz(y, x))
+    else:
+        s = 0.0
+        for i in range(1, len(y)):
+            s += (x[i] - x[i - 1]) * (y[i] + y[i - 1]) / 2.0
+        result = s
+    log.debug("_trapz: len=%s -> result=%.4f", len(y), result)
+    return result
 
 
 def compute_exposure(H2S_raw_ppm_shift, VOCs_raw_ppm_shift, Time_shift, BM_time=None):
@@ -164,7 +182,9 @@ def compute_exposure(H2S_raw_ppm_shift, VOCs_raw_ppm_shift, Time_shift, BM_time=
     """
     bm = BM_time if BM_time is not None else BM_TIME
     n = len(H2S_raw_ppm_shift)
+    log.debug("compute_exposure: n=%s bm=%s", n, bm)
     if n <= bm:
+        log.warning("compute_exposure: insufficient data n<=bm, returning 0")
         return {
             "h2s_abs_exposure": 0.0,
             "vocs_abs_exposure": 0.0,
@@ -207,6 +227,8 @@ def compute_exposure(H2S_raw_ppm_shift, VOCs_raw_ppm_shift, Time_shift, BM_time=
     h2s_baseline_ppm = float(H2S_raw_ppm_shift[bm])
     vocs_baseline_ppm = float(VOCs_raw_ppm_shift[bm])
 
+    log.info("compute_exposure done: h2s_exp=%.4f vocs_exp=%.4f total=%.4f h2s_ratio=%.2f%% vocs_ratio=%.2f%%",
+             h2s_exp, vocs_exp, total, h2s_ratio, vocs_ratio)
     return {
         "h2s_abs_exposure": h2s_exp,
         "vocs_abs_exposure": vocs_exp,
@@ -254,13 +276,13 @@ def build_measurement_json(gas_id, test_id, success, wifi_connection,
         ("VOCs_ratio_value[%]", str(calc_result["vocs_ratio_value_pct"])),
     ])
     json_data["data"] = OrderedDict([("gasValue", data_list)])
+    log.debug("build_measurement_json: gas_id=%s test_id=%s success=%s data_len=%s", gas_id, test_id, success, len(data_list))
     return json_data
 
 
 # ----- 팬 제어 (Raspberry Pi GPIO, 선택 사용) -----
 def fan_start(duty_cycle_pct=None, pin=None, frequency_hz=None):
     """PWM 팬 시작. RPi.GPIO 사용 가능 시에만 동작."""
-    import sys
     try:
         import RPi.GPIO as GPIO
         GPIO.setmode(GPIO.BCM)
@@ -270,9 +292,10 @@ def fan_start(duty_cycle_pct=None, pin=None, frequency_hz=None):
         GPIO.setup(p, GPIO.OUT)
         pwm = GPIO.PWM(p, f)
         pwm.start(dc)
-        print(f"[gpio_controller] PWM fan 시작 pin={p} {f}Hz duty={dc}%", file=sys.stderr)
+        log.info("fan_start: PWM fan started pin=%s %sHz duty=%s%%", p, f, dc)
         return pwm
-    except Exception:
+    except Exception as e:
+        log.warning("fan_start failed: %s", e)
         return None
 
 
@@ -284,8 +307,9 @@ def fan_stop(pwm_or_pin, pin=None):
             pwm_or_pin.stop()
         p = pin if pin is not None else (pwm_or_pin if isinstance(pwm_or_pin, int) else FAN_PIN)
         GPIO.output(p, GPIO.LOW)
-    except Exception:
-        pass
+        log.debug("fan_stop: pin=%s LOW", p)
+    except Exception as e:
+        log.debug("fan_stop exception (ignored): %s", e)
 
 
 # ----- ADC 읽기 (ABE ADCPi, 선택 사용) -----
@@ -298,21 +322,26 @@ def init_adc():
         bus = i2c_helper.get_smbus()
         adc = ADCPi(bus, 0x68, 0x69, 18)
         adc.set_conversion_mode(0)
+        log.info("init_adc: ADCPi initialized successfully")
         return adc
-    except Exception:
+    except Exception as e:
+        log.warning("init_adc failed: %s", e)
         return None
 
 
 def read_adc_voltages(adc, ch_h2s=1, ch_vocs=2, ch_switch=8):
     """ADC 채널 전압 읽기. adc가 None이면 (0,0,0) 반환."""
     if adc is None:
+        log.debug("read_adc_voltages: adc=None -> (0,0,0)")
         return 0.0, 0.0, 0.0
     try:
         h2s = adc.read_voltage(ch_h2s)
         vocs = adc.read_voltage(ch_vocs)
         sw = adc.read_voltage(ch_switch)
+        log.debug("read_adc_voltages: H2S=%.4fV VOCs=%.4fV switch=%.4fV", float(h2s), float(vocs), float(sw))
         return float(h2s), float(vocs), float(sw)
-    except Exception:
+    except Exception as e:
+        log.warning("read_adc_voltages exception: %s", e)
         return 0.0, 0.0, 0.0
 
 
@@ -330,20 +359,25 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
     - pwm: 이미 main 등에서 fan_start()로 켠 PWM 객체를 넘기면, 여기서 fan_start() 생략하고
           루프 종료 시 이 객체로 fan_stop() 호출. None이면 내부에서 fan_start() 후 종료 시 fan_stop().
     """
+    log.info("measure_sequence start: gas_id=%s test_id=%s simulation=%s", gas_id, test_id, simulation)
     if simulation:
+        log.debug("measure_sequence: simulation mode -> calling measure_sequence_simulation()")
         return measure_sequence_simulation()
 
     adc = init_adc()
     if adc is None:
+        log.warning("measure_sequence: ADC init failed -> returning simulation result")
         return measure_sequence_simulation()
 
     if pwm is None:
         try:
             pwm = fan_start()
-        except Exception:
+        except Exception as e:
+            log.warning("measure_sequence: fan_start exception %s", e)
             pwm = None
 
     data_file_name = f"{gas_id}{test_id}"
+    log.debug("measure_sequence: data_file_name=%s use_legacy_filter=%s", data_file_name, legacy_filter is not None)
     use_legacy_filter = legacy_filter is not None
     H2S_raw_ppm, VOCs_raw_ppm = [], []
     TIME = []
@@ -357,6 +391,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
 
     # 라즈베리파이(1~2GB RAM): 측정 루프 진입 전 불필요 메모리 회수 (ref MainCode 162행)
     gc.collect()
+    log.debug("measure_sequence: entering measurement loop (MAX_ITER=%s)", MEASURE_SEQUENCE_MAX_ITER)
 
     try:
         for _ in range(MEASURE_SEQUENCE_MAX_ITER):
@@ -391,7 +426,9 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
             if capture_callback and feces_st != 0:
                 for slot_one_based, offset in enumerate(CAPTURE_IDX_OFFSETS, start=1):
                     if idx == feces_st + offset:
-                        capture_callback(slot_one_based, data_file_name, datetime.now().strftime("%Y%m%d%H%M%S"))
+                        image_time_str = datetime.now().strftime("%Y%m%d%H%M%S")
+                        log.info("measure_sequence: capture slot=%s idx=%s image_time=%s", slot_one_based, idx, image_time_str)
+                        capture_callback(slot_one_based, data_file_name, image_time_str)
                         break
 
             end_time = time.time()
@@ -402,14 +439,19 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
 
             # 6) idx == feces_st + end_tr 시 종료
             if feces_st != 0 and idx == feces_st + end_tr:
+                log.info("measure_sequence: end condition met idx=%s feces_st=%s end_tr=%s", idx, feces_st, end_tr)
                 break
             idx += 1
+            if idx > 0 and idx % 200 == 0:
+                log.debug("measure_sequence: loop progress idx=%s feces_st=%s", idx, feces_st)
     finally:
         if pwm is not None:
             fan_stop(pwm)
+        log.debug("measure_sequence: loop exit idx=%s len(H2S_raw_ppm)=%s", idx, len(H2S_raw_ppm))
 
     # 종료 후: 시프트·오프셋·trapz·비율 계산
     if feces_st == 0 or feces_st < bm or feces_st + end_tr > len(H2S_raw_ppm):
+        log.warning("measure_sequence: invalid range (feces_st=%s bm=%s len=%s) -> returning simulation", feces_st, bm, len(H2S_raw_ppm))
         return measure_sequence_simulation()
 
     H2S_raw_ppm_shift, VOCs_raw_ppm_shift, Time_shift = [], [], []
@@ -417,6 +459,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
         H2S_raw_ppm_shift.append(H2S_raw_ppm[i])
         VOCs_raw_ppm_shift.append(VOCs_raw_ppm[i])
         Time_shift.append(f"{float(TIME[i]) - float(TIME[feces_st - bm]):.2f}")
+    log.debug("measure_sequence: shift range built shift_len=%s", len(H2S_raw_ppm_shift))
 
     # 대용량 리스트 조기 해제 후 GC (ref MainCode 352~355행). 1~2GB RAM 환경 완화.
     del H2S_raw_ppm, VOCs_raw_ppm, TIME, noise_1_list, noise_5_list
@@ -434,6 +477,8 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
     h2s_baseline = calc_result.get("h2s_baseline_ppm", 0.0)
     vocs_baseline = calc_result.get("vocs_baseline_ppm", 0.0)
 
+    log.info("measure_sequence done: sort=%s time_sec=%.2f h2s_ppm=%.4f vocs_ppm=%.4f total_abs_exposure=%.4f",
+             n, time_sec, last_h2s, last_vocs, calc_result["total_abs_exposure"])
     return {
         "gas_version": "GV.1.1",
         "h2s_abs_exposure": calc_result["h2s_abs_exposure"],

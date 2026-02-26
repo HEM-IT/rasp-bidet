@@ -23,6 +23,7 @@ MEASUREMENT_KEYS = [
     "vocs_offset_ppm",
     "vocs_ppm",
     "vocs_ratio_value_pct",
+    "created_at",       # 측정 완료 시각 (ISO 8601, API/DB 저장용)
 ]
 
 

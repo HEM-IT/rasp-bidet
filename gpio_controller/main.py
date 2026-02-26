@@ -4,6 +4,9 @@ gpio_controller 진입점.
 - MQTT command/start(measurement/start) 수신 시 1회 실행 (스위치 대체).
 - 실측: 명령어 1회 수신 시, 레거시와 동일 처리 순서(ADC→filter→PPM append→smooth_peak→update_feces_st→종료 후 시프트·trapz)로 1회 실행. NoFeces(0) 1장 → 가스 루프 → Feces 1,2,3 촬영 → 슬롯 1,2,3만 저장·전송 → measurement API 1회.
 - 시뮬레이션: 더미 가스 + 더미 이미지 분석 후 API 1회.
+
+Sleep: time.sleep(1)은 실측 경로(else 블록)에만 있음(팬 안정화, 디스플레이, 0번 촬영 후 각 1초). 시뮬레이션 경로에는 sleep 없어 즉시 진행됨.
+API payload: process_sensor_data가 gas_controller 반환값에서 스키마 필드(h2s_offset_ppm, time_sec, vocs_offset_ppm 등)를 그대로 복사. created_at은 전송 직전 main에서 설정. DB에 안 들어가면 API 서버 측 INSERT/매핑 확인 필요.
 """
 import os
 import sys
@@ -244,12 +247,12 @@ def main():
     if api_base:
         try:
             ensure_ready_then_set(api_base, gas_id, STATUS_DETECTING)
-            print("[SCENARIO] 8. Device status 갱신: detecting", file=sys.stderr)
+            print("[SCENARIO] 7. Device status 갱신: detecting", file=sys.stderr)
         except Exception as e:
             print(f"[gpio_controller] device status ready/detecting 전송 실패: {e}", file=sys.stderr)
 
     if use_simulation:
-        # 시뮬레이션: 시계열 더미 가스 + 더미 이미지 분석 (4장 촬영/업로드 생략)
+        # 시뮬레이션: 시계열 더미 가스 + 더미 이미지 분석 (4장 촬영/업로드 생략). 여기에는 time.sleep(1) 없음 → 즉시 진행.
         print("[gpio_controller] 시뮬레이션 모드: 더미 가스 + 더미 이미지 분석", file=sys.stderr)
         if api_base:
             try:
@@ -285,26 +288,22 @@ def main():
 
         
         pwm = fan_start()
-        time.sleep(1)
+        time.sleep(1)  # 팬 안정화 대기 (실측 경로에서만 동작; 시뮬 경로에는 sleep 없음)
 
-        
         try:
             SSD1306_DISPLAY(gas_id, test_id)
         except Exception as e:
             print(f"[gpio_controller] SSD1306_DISPLAY 오류(무시): {e}", file=sys.stderr)
-        time.sleep(1)
+        time.sleep(1)  # 디스플레이 갱신 대기
 
-        
         file_done = mqtt_payload.get("file_done", False) in (True, 1, "1", "true", "yes")
         Camera_LED("OFF" if file_done else "ON")
 
-        
         image_time_0 = datetime.now().strftime("%Y%m%d%H%M%S")
         capture_at_slot(data_file_name, image_time_0, 0, cwd=cwd)
         image_times = [image_time_0]
 
-        
-        time.sleep(1)
+        time.sleep(3)  # 0번 슬롯 촬영 후 대기 (libcamera 정리 등)
         gc.collect()
 
         
@@ -368,7 +367,15 @@ def main():
 
     if not api_base:
         print("[gpio_controller] DATA_API_URL 없음, API 전송 생략", file=sys.stderr)
-        return 0 
+        return 0
+
+    # DB 저장용 측정 완료 시각 (API에서 created_at 미수신 시 사용)
+    record["created_at"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    # payload에 h2s_offset_ppm, time_sec, vocs_offset_ppm, created_at 포함 — API/DB에서 이 필드들을 저장하는지 확인 필요
+    if os.environ.get("GPIO_DEBUG"):
+        print(f"[gpio_controller] measurement payload 키: {list(record.keys())}", file=sys.stderr)
+        print(f"[gpio_controller] h2s_offset_ppm={record.get('h2s_offset_ppm')} time_sec={record.get('time_sec')} vocs_offset_ppm={record.get('vocs_offset_ppm')} created_at={record.get('created_at')}", file=sys.stderr)
 
     try:
         print("[SCENARIO] 7. measurement API 전송 (gas 데이터)", file=sys.stderr)
