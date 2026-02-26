@@ -26,6 +26,12 @@ except ImportError:
     legacy_filter = None
 
 try:
+    from device_status_api import update_device_status, STATUS_MEASURING
+except ImportError:
+    update_device_status = None
+    STATUS_MEASURING = "measuring"
+
+try:
     import numpy as np
     _HAS_NUMPY = True
 except ImportError:
@@ -352,7 +358,7 @@ def read_adc_voltages(adc, ch_h2s=1, ch_vocs=2, ch_switch=8):
 MEASURE_SEQUENCE_MAX_ITER = int(os.environ.get("MEASURE_SEQUENCE_MAX_ITER", "3000"))
 
 
-def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, pwm=None):
+def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, pwm=None, api_base_url=None):
     """
     명령어 기반 1회 실행. 레거시 MainCode와 동일한 처리 순서로 동작.
 
@@ -369,6 +375,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
     - capture_callback(slot, data_file_name, image_time_str): slot 1,2,3 촬영 시점에 호출.
     - pwm: 이미 main 등에서 fan_start()로 켠 PWM 객체를 넘기면, 여기서 fan_start() 생략하고
           루프 종료 시 이 객체로 fan_stop() 호출. None이면 내부에서 fan_start() 후 종료 시 fan_stop().
+    - api_base_url: 지정 시 가스 측정 루프 진입 직전에 디바이스 상태 'measuring' 갱신 (8번).
     """
     log.info("measure_sequence start: gas_id=%s test_id=%s simulation=%s", gas_id, test_id, simulation)
     if simulation:
@@ -403,6 +410,14 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
     # 라즈베리파이(1~2GB RAM): 측정 루프 진입 전 불필요 메모리 회수 (ref MainCode 162행)
     gc.collect()
     log.debug("measure_sequence: entering measurement loop (MAX_ITER=%s)", MEASURE_SEQUENCE_MAX_ITER)
+
+    # 8번: 가스 측정 루프 진입 시 디바이스 상태 measuring 갱신
+    if api_base_url and update_device_status:
+        try:
+            update_device_status(api_base_url, gas_id, STATUS_MEASURING)
+            log.info("[SCENARIO] 8. Device status 갱신: measuring (measure_sequence 루프 진입)")
+        except Exception as e:
+            log.warning("measure_sequence: device status measuring 전송 실패: %s", e)
 
     try:
         for _ in range(MEASURE_SEQUENCE_MAX_ITER):
