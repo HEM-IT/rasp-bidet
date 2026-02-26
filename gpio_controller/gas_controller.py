@@ -32,10 +32,12 @@ except ImportError:
     _HAS_NUMPY = False
 
 # ----- 레거시 상수 -----
-BM_TIME = int(os.environ.get("BM_TIME", "8"))           # baseline 구간 길이
-END_TR = int(os.environ.get("END_TR", "180"))           # feces_st + end_tr 에서 측정 종료
+BM_TIME = int(os.environ.get("BM_TIME", "8"))           # baseline 구간 길이 (샘플 수)
+END_TR = int(os.environ.get("END_TR", "180"))           # feces_st + end_tr 에서 측정 종료 (샘플 수, 1Hz 시 180초=3분)
 SHORT_TR = int(os.environ.get("SHORT_TR", "135"))      # 10+2
 LONG_TR = int(os.environ.get("LONG_TR", "20"))         # 5+2
+# 루프 주기(초): 1.0 이면 1샘플/초 → 8샘플=8초 베이스라인, 180샘플=3분 측정. 0이면 sleep 없음(최대 속도).
+MEASURE_LOOP_INTERVAL_SEC = float(os.environ.get("MEASURE_LOOP_INTERVAL_SEC", "1.0"))
 FAN_PIN = int(os.environ.get("FAN_PIN", "12"))
 FAN_FREQUENCY_HZ = int(os.environ.get("FAN_FREQUENCY_HZ", "300"))
 FAN_DUTY_CYCLE_PCT = int(os.environ.get("FAN_DUTY_CYCLE_PCT", "100"))
@@ -58,7 +60,8 @@ CAPTURE_IDX_OFFSETS = tuple(int(x.strip()) for x in _def_capture_idx.split(",") 
 if len(CAPTURE_IDX_OFFSETS) < 3:
     CAPTURE_IDX_OFFSETS = (30, 60, 120)  # fallback
 
-log.debug("gas_controller constants loaded: BM_TIME=%s, END_TR=%s, CAPTURE_IDX_OFFSETS=%s", BM_TIME, END_TR, CAPTURE_IDX_OFFSETS)
+log.debug("gas_controller constants loaded: BM_TIME=%s, END_TR=%s, MEASURE_LOOP_INTERVAL_SEC=%s, CAPTURE_IDX_OFFSETS=%s",
+          BM_TIME, END_TR, MEASURE_LOOP_INTERVAL_SEC, CAPTURE_IDX_OFFSETS)
 
 
 def filter_voltage(voltage, b_prev, alpha=0.1):
@@ -351,7 +354,15 @@ MEASURE_SEQUENCE_MAX_ITER = int(os.environ.get("MEASURE_SEQUENCE_MAX_ITER", "300
 
 def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, pwm=None):
     """
-    명령어 기반 1회 실행. 시계열 대기 없이, 레거시와 동일한 처리 순서로 동작.
+    명령어 기반 1회 실행. 레거시 MainCode와 동일한 처리 순서로 동작.
+
+    시나리오 (MEASURE_LOOP_INTERVAL_SEC=1.0 기준):
+    1) 호출 직후: 실시간 ADC 측정 루프 진입. 매 루프마다 ADC 읽기 → filter → PPM append.
+    2) 8초간 베이스라인: 루프 주기가 1초이면 최소 8샘플 = 8초 분량 수집 후 update_feces_st에서만 감지 가능(idx>BM_time).
+    3) 가스 감지 후: feces_st 설정 시점부터 추가로 end_tr(기본 180)샘플 = 3분 측정 후 종료.
+    4) 오프셋 재계산: 시프트 구간 = [feces_st-BM_time .. 끝]. 베이스라인 = raw_ppm_shift[BM_time](감지 시점 1개, 레거시와 동일).
+       compute_exposure에서 오프셋 = raw[i]-raw[BM_time], trapz 적분·비율 계산.
+
     순서: ADC 읽기 → utils.filter(또는 filter_voltage) → H2S/VOCs PPM append
           → smooth_peak_h2s → update_feces_st → idx==feces_st+end_tr 시 종료
           → 시프트·오프셋·trapz·비율 계산.
@@ -444,6 +455,13 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
             idx += 1
             if idx > 0 and idx % 200 == 0:
                 log.debug("measure_sequence: loop progress idx=%s feces_st=%s", idx, feces_st)
+
+            # 루프 주기: 1Hz(1초/샘플)로 맞추면 8샘플=8초 베이스라인, 감지 후 180샘플=3분 측정 (MEASURE_LOOP_INTERVAL_SEC=1.0)
+            if MEASURE_LOOP_INTERVAL_SEC > 0:
+                elapsed = time.time() - start_time
+                sleep_sec = MEASURE_LOOP_INTERVAL_SEC - elapsed
+                if sleep_sec > 0:
+                    time.sleep(sleep_sec)
     finally:
         if pwm is not None:
             fan_stop(pwm)
