@@ -119,12 +119,20 @@ def update_feces_st(idx, H2S_raw_ppm, noise_1_list, noise_5_list, feces_st, BM_t
     :param BM_time: BM_time (기본 모듈 상수)
     :return: (feces_st_new, noise_1_list, noise_5_list)
     """
+    # 호출 여부 확인용 (10회마다만 출력하여 로그 과다 방지)
+    if idx == 2 or (idx > 0 and idx % 10 == 0):
+        print(f"[gpio_controller] [update_feces_st] 호출 idx={idx} feces_st={feces_st} len(H2S_raw_ppm)={len(H2S_raw_ppm)}", file=sys.stderr)
+
     bm = BM_time if BM_time is not None else BM_TIME
     if feces_st != 0 or idx <= 1:
+        if idx == 2 or (idx > 0 and idx % 10 == 0):
+            print(f"[gpio_controller] [update_feces_st] 조기반환: feces_st!=0 or idx<=1 (idx={idx})", file=sys.stderr)
         return feces_st, noise_1_list, noise_5_list
 
     temp_stt = idx - 1
     if temp_stt < 2:
+        if idx == 2 or (idx > 0 and idx % 10 == 0):
+            print(f"[gpio_controller] [update_feces_st] 조기반환: temp_stt<2 (idx={idx})", file=sys.stderr)
         return feces_st, noise_1_list, noise_5_list
 
     # noise_1
@@ -135,11 +143,15 @@ def update_feces_st(idx, H2S_raw_ppm, noise_1_list, noise_5_list, feces_st, BM_t
         noise_5_list.append(abs(H2S_raw_ppm[idx] - H2S_raw_ppm[idx - 5]))
 
     if idx <= bm:
+        if idx == 9 or (idx > 0 and idx % 10 == 0):
+            print(f"[gpio_controller] [update_feces_st] 조기반환: idx<=bm (idx={idx} bm={bm})", file=sys.stderr)
         return feces_st, noise_1_list, noise_5_list
 
     # feces_st 판정 (인덱스 범위 검사: temp_stt는 append 직후이므로 len-1 이하여야 함)
     if temp_stt >= len(noise_1_list) or temp_stt >= len(noise_5_list):
         log.debug("update_feces_st: skip 판정 (noise_1 len=%s noise_5 len=%s temp_stt=%s)", len(noise_1_list), len(noise_5_list), temp_stt)
+        if idx % 10 == 0:
+            print(f"[gpio_controller] [update_feces_st] 조기반환: skip 판정 (temp_stt={temp_stt} len_n1={len(noise_1_list)} len_n5={len(noise_5_list)})", file=sys.stderr)
         return feces_st, noise_1_list, noise_5_list
 
     slice_n1 = noise_1_list[0 : temp_stt - 2]
@@ -162,6 +174,13 @@ def update_feces_st(idx, H2S_raw_ppm, noise_1_list, noise_5_list, feces_st, BM_t
 
     if feces_st != 0:
         log.info("update_feces_st: feces_st detected idx=%s -> feces_st=%s (noise_1=%.4f noise_5=%.4f)", idx, feces_st, noise_1_list[temp_stt], noise_5_list[temp_stt] if temp_stt < len(noise_5_list) else 0)
+        n1_val = noise_1_list[temp_stt]
+        n5_val = noise_5_list[temp_stt] if temp_stt < len(noise_5_list) else 0
+        print(f"[gpio_controller] [update_feces_st] 감지됨 idx={idx} -> feces_st={feces_st} (noise_1={n1_val:.4f} noise_5={n5_val:.4f})", file=sys.stderr)
+    elif idx % 10 == 0:
+        n1 = noise_1_list[temp_stt] if temp_stt < len(noise_1_list) else 0
+        n5 = noise_5_list[temp_stt] if temp_stt < len(noise_5_list) else 0
+        print(f"[gpio_controller] [update_feces_st] 판정 후 유지 idx={idx} feces_st=0 (noise_1={n1:.4f} noise_5={n5:.4f}, 임계값 n1>{NOISE_1_THRESHOLD} n5>{NOISE_5_THRESHOLD})", file=sys.stderr)
     return feces_st, noise_1_list, noise_5_list
 
 
