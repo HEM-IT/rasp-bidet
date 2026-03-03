@@ -243,17 +243,18 @@ def main():
 
     api_base = config.DATA_API_URL
     print(f"[SCENARIO] 6. gpio_controller: PWM fan → gas_controller + camera_controller (레거시 순서) | simulation={use_simulation}", file=sys.stderr)
+    # 디바이스 상태: ready → detecting → measuring → completed (8번: 진행 시마다 갱신)
+    if api_base:
+        try:
+            ensure_ready_then_set(api_base, gas_id, STATUS_DETECTING)
+            print("[SCENARIO] 7. Device status 갱신: detecting", file=sys.stderr)
+        except Exception as e:
+            print(f"[gpio_controller] device status ready/detecting 전송 실패: {e}", file=sys.stderr)
 
     if use_simulation:
         # 시뮬레이션: 시계열 더미 가스 + 더미 이미지 분석 (4장 촬영/업로드 생략). 여기에는 time.sleep(1) 없음 → 즉시 진행.
         print("[gpio_controller] 시뮬레이션 모드: 더미 가스 + 더미 이미지 분석", file=sys.stderr)
-        # 7번: detecting, 8번: measuring (시뮬은 루프 없음 → 측정 시작 직전에 설정)
         if api_base:
-            try:
-                ensure_ready_then_set(api_base, gas_id, STATUS_DETECTING)
-                print("[SCENARIO] 7. Device status 갱신: detecting", file=sys.stderr)
-            except Exception as e:
-                print(f"[gpio_controller] device status ready/detecting 전송 실패: {e}", file=sys.stderr)
             try:
                 update_device_status(api_base, gas_id, STATUS_MEASURING)
                 print("[SCENARIO] 8. Device status 갱신: measuring", file=sys.stderr)
@@ -286,7 +287,9 @@ def main():
         cwd = getattr(config, "GPIO_CONTROLLER_DIR", os.path.dirname(os.path.abspath(__file__)))
 
         
+        print("[gpio_controller] [GPIO] 팬 PWM 시작 시도", file=sys.stderr)
         pwm = fan_start()
+        print(f"[gpio_controller] [GPIO] 팬 PWM 결과: pwm={'OK' if pwm else 'None(실패)'}", file=sys.stderr)
         time.sleep(1)  # 팬 안정화 대기 (실측 경로에서만 동작; 시뮬 경로에는 sleep 없음)
 
         try:
@@ -299,28 +302,32 @@ def main():
         Camera_LED("OFF" if file_done else "ON")
 
         image_time_0 = datetime.now().strftime("%Y%m%d%H%M%S")
+        print(f"[gpio_controller] [촬영] 슬롯 0 (NoFeces) 촬영 시작 data_file_name={data_file_name} image_time={image_time_0}", file=sys.stderr)
         capture_at_slot(data_file_name, image_time_0, 0, cwd=cwd)
         image_times = [image_time_0]
+        print(f"[gpio_controller] [촬영] 슬롯 0 촬영 완료. image_times len={len(image_times)}", file=sys.stderr)
 
         time.sleep(3)  # 0번 슬롯 촬영 후 대기 (libcamera 정리 등)
         gc.collect()
 
-        # 7번: detecting (가스 측정 루프 진입 직전)
+        
         if api_base:
             try:
-                ensure_ready_then_set(api_base, gas_id, STATUS_DETECTING)
-                print("[SCENARIO] 7. Device status 갱신: detecting", file=sys.stderr)
+                update_device_status(api_base, gas_id, STATUS_MEASURING)
+                print("[SCENARIO] 8. Device status 갱신: measuring", file=sys.stderr)
             except Exception as e:
-                print(f"[gpio_controller] device status ready/detecting 전송 실패: {e}", file=sys.stderr)
+                print(f"[gpio_controller] device status measuring 전송 실패: {e}", file=sys.stderr)
         def _on_capture(slot, d, t):
+            print(f"[gpio_controller] [촬영] capture_callback 호출 slot={slot} data_file_name={d} image_time={t}", file=sys.stderr)
             capture_at_slot(d, t, slot, cwd=cwd)
             image_times.append(t)
+            print(f"[gpio_controller] [촬영] 슬롯 {slot} 촬영 완료. image_times len={len(image_times)}", file=sys.stderr)
 
-        # 8번: measuring 은 measure_sequence 내부(가스 측정 루프 진입 시)에서 설정
+        print("[gpio_controller] [GPIO] measure_sequence 진입 (가스 루프에서 feces_st 감지 시 슬롯 1,2,3 촬영)", file=sys.stderr)
         gas_data = measure_sequence(
-            gas_id, test_id, capture_callback=_on_capture, simulation=False, pwm=pwm, api_base_url=api_base
+            gas_id, test_id, capture_callback=_on_capture, simulation=False, pwm=pwm
         )
-        print("[gpio_controller] gas_controller(실측) 완료", file=sys.stderr)
+        print(f"[gpio_controller] gas_controller(실측) 완료. 촬영된 슬롯 수: {len(image_times)} (image_times={image_times})", file=sys.stderr)
 
         # 7) 루프 종료 후 Reset_Display (ref MainCode 214-216행)
         try:
@@ -331,41 +338,43 @@ def main():
         # 2) 슬롯 1,2,3을 Hong 서버(config.IMAGE_UPLOAD_URL)로 업로드 — camera_controller.upload_image_to_server 사용
         upload_results = []
         base = cwd or getattr(config, "GPIO_CONTROLLER_DIR", os.path.dirname(os.path.abspath(__file__)))
+        print(f"[gpio_controller] [업로드] 슬롯 1,2,3 업로드 시도. image_times len={len(image_times)} base={base}", file=sys.stderr)
         for slot in (1, 2, 3):
             if slot >= len(image_times):
+                print(f"[gpio_controller] [업로드] 슬롯 {slot} 건너뜀: image_times 미존재 (가스 루프에서 capture_callback 미호출 가능성)", file=sys.stderr)
                 upload_results.append((slot, False, None, "image_times 미존재"))
                 continue
             image_time_str = image_times[slot]
             filename = f"{data_file_name}-{image_time_str}-{slot}.jpg"
             path = os.path.join(base, filename)
             if not os.path.isfile(path):
+                print(f"[gpio_controller] [업로드] 슬롯 {slot} 건너뜀: 파일 없음 path={path}", file=sys.stderr)
                 upload_results.append((slot, False, filename, "파일 없음"))
                 continue
             ok, resp = upload_image_to_server(path, filename)
+            print(f"[gpio_controller] [업로드] 슬롯 {slot} filename={filename} ok={ok}", file=sys.stderr)
             upload_results.append((slot, ok, filename, resp))
         last_upload_ok = None
         for _slot, ok, _fn, resp in upload_results:
             if ok and isinstance(resp, dict):
                 last_upload_ok = resp
-        # 실측 모드: 이미지 분석 결과 조회 비활성화 (필요 시 주석 해제)
-        # analysis = fetch_image_analysis_result(gas_id, test_id)
-        # camera_data = {
-        #     "upload_response": last_upload_ok,
-        #     "image_analysis": analysis,
-        #     "result_url": getattr(config, "IMAGE_ANALYSIS_RESULT_BASE", "image-analysis")
-        #     + f"/{gas_id}/upload/{test_id}",
-        # }
-        # if not analysis and isinstance(last_upload_ok, dict) and "raw_bristol_type" in last_upload_ok:
-        #     camera_data["image_analysis"] = last_upload_ok
+        analysis = fetch_image_analysis_result(gas_id, test_id)
+        camera_data = {
+            "upload_response": last_upload_ok,
+            "image_analysis": analysis,
+            "result_url": getattr(config, "IMAGE_ANALYSIS_RESULT_BASE", "image-analysis")
+            + f"/{gas_id}/upload/{test_id}",
+        }
+        if not analysis and isinstance(last_upload_ok, dict) and "raw_bristol_type" in last_upload_ok:
+            camera_data["image_analysis"] = last_upload_ok
 
         print("[gpio_controller] camera_controller(실측) 데이터 취합 완료", file=sys.stderr)
-
-        # 실측: 가스 데이터만 measurement API 전송 (image_analysis 미반영). process_sensor_data는 raw_camera 미사용.
-        record = process_sensor_data(gas_data, None)
+        
+        record = process_sensor_data(gas_data, camera_data)
         record["profile_id"] = profile_id
         record["gas_id"] = gas_id
         record["test_id"] = test_id
-        # record = merge_measurement_with_image_analysis(record, camera_data)  # image_analysis 비활성화
+        record = merge_measurement_with_image_analysis(record, camera_data)
 
     if not api_base:
         print("[gpio_controller] DATA_API_URL 없음, API 전송 생략", file=sys.stderr)

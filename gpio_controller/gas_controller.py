@@ -26,12 +26,6 @@ except ImportError:
     legacy_filter = None
 
 try:
-    from device_status_api import update_device_status, STATUS_MEASURING
-except ImportError:
-    update_device_status = None
-    STATUS_MEASURING = "measuring"
-
-try:
     import numpy as np
     _HAS_NUMPY = True
 except ImportError:
@@ -292,6 +286,7 @@ def build_measurement_json(gas_id, test_id, success, wifi_connection,
 # ----- 팬 제어 (Raspberry Pi GPIO, 선택 사용) -----
 def fan_start(duty_cycle_pct=None, pin=None, frequency_hz=None):
     """PWM 팬 시작. RPi.GPIO 사용 가능 시에만 동작."""
+    log.info("[GPIO] fan_start 진입")
     try:
         import RPi.GPIO as GPIO
         GPIO.setmode(GPIO.BCM)
@@ -301,10 +296,10 @@ def fan_start(duty_cycle_pct=None, pin=None, frequency_hz=None):
         GPIO.setup(p, GPIO.OUT)
         pwm = GPIO.PWM(p, f)
         pwm.start(dc)
-        log.info("fan_start: PWM fan started pin=%s %sHz duty=%s%%", p, f, dc)
+        log.info("[GPIO] fan_start 성공: pin=%s %sHz duty=%s%%", p, f, dc)
         return pwm
     except Exception as e:
-        log.warning("fan_start failed: %s", e)
+        log.warning("[GPIO] fan_start 실패: %s", e)
         return None
 
 
@@ -316,41 +311,48 @@ def fan_stop(pwm_or_pin, pin=None):
             pwm_or_pin.stop()
         p = pin if pin is not None else (pwm_or_pin if isinstance(pwm_or_pin, int) else FAN_PIN)
         GPIO.output(p, GPIO.LOW)
-        log.debug("fan_stop: pin=%s LOW", p)
+        log.info("[GPIO] fan_stop: pin=%s LOW", p)
     except Exception as e:
-        log.debug("fan_stop exception (ignored): %s", e)
+        log.warning("[GPIO] fan_stop 예외(무시): %s", e)
 
 
 # ----- ADC 읽기 (ABE ADCPi, 선택 사용) -----
+# 참고: ABElectronics 라이브러리 (ABE_helpers, ABE_ADCPi)는 라즈베리파이 경로
+# /home/pi/ABElectronics_Python3_Libraries/ 에 설치되어 있어야 함. 없으면 ImportError 발생.
 def init_adc():
     """ADCPi 초기화. 실패 시 None 반환."""
+    log.info("[GPIO/ADC] init_adc 진입")
     try:
         from ABE_helpers import ABEHelpers
         from ABE_ADCPi import ADCPi
+        log.debug("[GPIO/ADC] ABE_helpers, ABE_ADCPi import 성공")
         i2c_helper = ABEHelpers()
         bus = i2c_helper.get_smbus()
         adc = ADCPi(bus, 0x68, 0x69, 18)
         adc.set_conversion_mode(0)
-        log.info("init_adc: ADCPi initialized successfully")
+        log.info("[GPIO/ADC] init_adc 성공: ADCPi 초기화 완료")
         return adc
+    except ImportError as e:
+        log.warning("[GPIO/ADC] init_adc 실패(모듈 없음): %s — ABE_helpers/ABE_ADCPi 미설치 시 발생. 라즈베리파이 ABElectronics_Python3_Libraries 설치 필요.", e)
+        return None
     except Exception as e:
-        log.warning("init_adc failed: %s", e)
+        log.warning("[GPIO/ADC] init_adc 실패: %s", e)
         return None
 
 
 def read_adc_voltages(adc, ch_h2s=1, ch_vocs=2, ch_switch=8):
     """ADC 채널 전압 읽기. adc가 None이면 (0,0,0) 반환."""
     if adc is None:
-        log.debug("read_adc_voltages: adc=None -> (0,0,0)")
+        log.debug("[GPIO/ADC] read_adc_voltages: adc=None -> (0,0,0)")
         return 0.0, 0.0, 0.0
     try:
         h2s = adc.read_voltage(ch_h2s)
         vocs = adc.read_voltage(ch_vocs)
         sw = adc.read_voltage(ch_switch)
-        log.debug("read_adc_voltages: H2S=%.4fV VOCs=%.4fV switch=%.4fV", float(h2s), float(vocs), float(sw))
+        log.debug("[GPIO/ADC] read_adc: H2S=%.4fV VOCs=%.4fV switch=%.4fV", float(h2s), float(vocs), float(sw))
         return float(h2s), float(vocs), float(sw)
     except Exception as e:
-        log.warning("read_adc_voltages exception: %s", e)
+        log.warning("[GPIO/ADC] read_adc_voltages 예외: %s", e)
         return 0.0, 0.0, 0.0
 
 
@@ -358,7 +360,7 @@ def read_adc_voltages(adc, ch_h2s=1, ch_vocs=2, ch_switch=8):
 MEASURE_SEQUENCE_MAX_ITER = int(os.environ.get("MEASURE_SEQUENCE_MAX_ITER", "3000"))
 
 
-def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, pwm=None, api_base_url=None):
+def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, pwm=None):
     """
     명령어 기반 1회 실행. 레거시 MainCode와 동일한 처리 순서로 동작.
 
@@ -375,27 +377,29 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
     - capture_callback(slot, data_file_name, image_time_str): slot 1,2,3 촬영 시점에 호출.
     - pwm: 이미 main 등에서 fan_start()로 켠 PWM 객체를 넘기면, 여기서 fan_start() 생략하고
           루프 종료 시 이 객체로 fan_stop() 호출. None이면 내부에서 fan_start() 후 종료 시 fan_stop().
-    - api_base_url: 지정 시 가스 측정 루프 진입 직전에 디바이스 상태 'measuring' 갱신 (8번).
     """
-    log.info("measure_sequence start: gas_id=%s test_id=%s simulation=%s", gas_id, test_id, simulation)
+    log.info("[GPIO] measure_sequence 시작: gas_id=%s test_id=%s simulation=%s", gas_id, test_id, simulation)
     if simulation:
-        log.debug("measure_sequence: simulation mode -> calling measure_sequence_simulation()")
+        log.debug("[GPIO] 시뮬레이션 모드 -> measure_sequence_simulation() 반환")
         return measure_sequence_simulation()
 
     adc = init_adc()
     if adc is None:
-        log.warning("measure_sequence: ADC init failed -> returning simulation result")
+        log.warning("[GPIO] measure_sequence: ADC 초기화 실패(ABE_helpers/ADCPi 미사용) -> 가스 루프 생략, 시뮬 결과 반환. 이 경우 슬롯 1,2,3 촬영 없음(0번만 촬영됨).")
         return measure_sequence_simulation()
 
     if pwm is None:
         try:
             pwm = fan_start()
+            log.info("[GPIO] 팬 PWM 시작 성공 (pin=%s)", FAN_PIN)
         except Exception as e:
-            log.warning("measure_sequence: fan_start exception %s", e)
+            log.warning("[GPIO] fan_start 예외: %s", e)
             pwm = None
+    else:
+        log.info("[GPIO] 외부에서 전달된 PWM 사용")
 
     data_file_name = f"{gas_id}{test_id}"
-    log.debug("measure_sequence: data_file_name=%s use_legacy_filter=%s", data_file_name, legacy_filter is not None)
+    log.info("[GPIO] data_file_name=%s use_legacy_filter=%s CAPTURE_IDX_OFFSETS=%s", data_file_name, legacy_filter is not None, CAPTURE_IDX_OFFSETS)
     use_legacy_filter = legacy_filter is not None
     H2S_raw_ppm, VOCs_raw_ppm = [], []
     TIME = []
@@ -407,17 +411,8 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
     bm = BM_TIME
     end_tr = END_TR
 
-    # 라즈베리파이(1~2GB RAM): 측정 루프 진입 전 불필요 메모리 회수 (ref MainCode 162행)
     gc.collect()
-    log.debug("measure_sequence: entering measurement loop (MAX_ITER=%s)", MEASURE_SEQUENCE_MAX_ITER)
-
-    # 8번: 가스 측정 루프 진입 시 디바이스 상태 measuring 갱신
-    if api_base_url and update_device_status:
-        try:
-            update_device_status(api_base_url, gas_id, STATUS_MEASURING)
-            log.info("[SCENARIO] 8. Device status 갱신: measuring (measure_sequence 루프 진입)")
-        except Exception as e:
-            log.warning("measure_sequence: device status measuring 전송 실패: %s", e)
+    log.info("[GPIO] 측정 루프 진입 MAX_ITER=%s (feces_st 감지 후 idx가 feces_st+%s에 도달하면 슬롯 1,2,3 촬영)", MEASURE_SEQUENCE_MAX_ITER, CAPTURE_IDX_OFFSETS)
 
     try:
         for _ in range(MEASURE_SEQUENCE_MAX_ITER):
@@ -425,6 +420,8 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
 
             # 1) ADC 읽기
             h2s_v, vocs_v, _ = read_adc_voltages(adc)
+            if idx == 0:
+                log.info("[GPIO] 첫 ADC 읽기: H2S=%.4fV VOCs=%.4fV", h2s_v, vocs_v)
             # 2) utils.filter 또는 filter_voltage → 필터 출력
             if use_legacy_filter:
                 H2S_filtered_v, H2S_b, H2S_a = legacy_filter(h2s_v, H2S_b, H2S_a)
@@ -446,6 +443,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
                     idx, H2S_raw_ppm, noise_1_list, noise_5_list, feces_st, bm
                 )
                 if feces_st != 0:
+                    log.info("[GPIO] feces_st 감지: idx=%s -> feces_st=%s (이후 idx=%s,%s,%s에서 슬롯 1,2,3 촬영)", idx, feces_st, feces_st + CAPTURE_IDX_OFFSETS[0], feces_st + CAPTURE_IDX_OFFSETS[1], feces_st + CAPTURE_IDX_OFFSETS[2])
                     time.sleep(0.5)
 
             # Feces 슬롯 1,2,3 촬영 시점 (idx == feces_st + CAPTURE_IDX_OFFSETS[0|1|2] 일 때, 기본 30/60/120)
@@ -453,7 +451,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
                 for slot_one_based, offset in enumerate(CAPTURE_IDX_OFFSETS, start=1):
                     if idx == feces_st + offset:
                         image_time_str = datetime.now().strftime("%Y%m%d%H%M%S")
-                        log.info("measure_sequence: capture slot=%s idx=%s image_time=%s", slot_one_based, idx, image_time_str)
+                        log.info("[GPIO] 캡처 요청 slot=%s idx=%s (feces_st+offset=%s) image_time=%s", slot_one_based, idx, offset, image_time_str)
                         capture_callback(slot_one_based, data_file_name, image_time_str)
                         break
 
@@ -465,11 +463,13 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
 
             # 6) idx == feces_st + end_tr 시 종료
             if feces_st != 0 and idx == feces_st + end_tr:
-                log.info("measure_sequence: end condition met idx=%s feces_st=%s end_tr=%s", idx, feces_st, end_tr)
+                log.info("[GPIO] 측정 루프 종료 조건: idx=%s feces_st=%s end_tr=%s", idx, feces_st, end_tr)
                 break
             idx += 1
-            if idx > 0 and idx % 200 == 0:
-                log.debug("measure_sequence: loop progress idx=%s feces_st=%s", idx, feces_st)
+            if idx > 0 and idx % 50 == 0:
+                log.info("[GPIO] 루프 진행 idx=%s feces_st=%s H2S_last=%.4f VOCs_last=%.4f", idx, feces_st, H2S_raw_ppm[-1] if H2S_raw_ppm else 0, VOCs_raw_ppm[-1] if VOCs_raw_ppm else 0)
+            elif idx > 0 and idx % 200 == 0:
+                log.debug("[GPIO] 루프 진행 idx=%s feces_st=%s", idx, feces_st)
 
             # 루프 주기: 1Hz(1초/샘플)로 맞추면 8샘플=8초 베이스라인, 감지 후 180샘플=3분 측정 (MEASURE_LOOP_INTERVAL_SEC=1.0)
             if MEASURE_LOOP_INTERVAL_SEC > 0:
@@ -480,11 +480,12 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
     finally:
         if pwm is not None:
             fan_stop(pwm)
-        log.debug("measure_sequence: loop exit idx=%s len(H2S_raw_ppm)=%s", idx, len(H2S_raw_ppm))
+            log.info("[GPIO] 팬 PWM 정지 완료")
+        log.info("[GPIO] 측정 루프 종료 idx=%s len(H2S_raw_ppm)=%s", idx, len(H2S_raw_ppm))
 
     # 종료 후: 시프트·오프셋·trapz·비율 계산
     if feces_st == 0 or feces_st < bm or feces_st + end_tr > len(H2S_raw_ppm):
-        log.warning("measure_sequence: invalid range (feces_st=%s bm=%s len=%s) -> returning simulation", feces_st, bm, len(H2S_raw_ppm))
+        log.warning("[GPIO] 측정 구간 무효 (feces_st=%s bm=%s len=%s) -> 시뮬 결과 반환", feces_st, bm, len(H2S_raw_ppm))
         return measure_sequence_simulation()
 
     H2S_raw_ppm_shift, VOCs_raw_ppm_shift, Time_shift = [], [], []
