@@ -411,5 +411,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception as e:
+        import traceback
         print(f"[gpio_controller] 오류: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         sys.exit(1)

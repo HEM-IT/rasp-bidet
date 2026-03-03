@@ -137,8 +137,13 @@ def update_feces_st(idx, H2S_raw_ppm, noise_1_list, noise_5_list, feces_st, BM_t
     if idx <= bm:
         return feces_st, noise_1_list, noise_5_list
 
-    # feces_st 판정
-    max_n1_prev = max(noise_1_list[0 : temp_stt - 2]) if temp_stt > 2 else 0
+    # feces_st 판정 (인덱스 범위 검사: temp_stt는 append 직후이므로 len-1 이하여야 함)
+    if temp_stt >= len(noise_1_list) or temp_stt >= len(noise_5_list):
+        log.debug("update_feces_st: skip 판정 (noise_1 len=%s noise_5 len=%s temp_stt=%s)", len(noise_1_list), len(noise_5_list), temp_stt)
+        return feces_st, noise_1_list, noise_5_list
+
+    slice_n1 = noise_1_list[0 : temp_stt - 2]
+    max_n1_prev = max(slice_n1) if len(slice_n1) > 0 else 0
     if max_n1_prev > 0.006:
         if noise_1_list[temp_stt] > max_n1_prev * 1.2:
             feces_st = idx - 2
@@ -146,7 +151,8 @@ def update_feces_st(idx, H2S_raw_ppm, noise_1_list, noise_5_list, feces_st, BM_t
         if noise_1_list[temp_stt] > NOISE_1_THRESHOLD:
             feces_st = temp_stt - 2
 
-    max_n5_prev = max(noise_5_list[0 : temp_stt - 2]) if temp_stt > 2 else 0
+    slice_n5 = noise_5_list[0 : temp_stt - 2]
+    max_n5_prev = max(slice_n5) if len(slice_n5) > 0 else 0
     if max_n5_prev > NOISE_5_THRESHOLD_HIGH:
         if noise_5_list[temp_stt] > max_n5_prev * 1.2:
             feces_st = idx - 2
@@ -533,6 +539,11 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
     # 종료 후: 시프트·오프셋·trapz·비율 계산
     if feces_st == 0 or feces_st < bm or feces_st + end_tr > len(H2S_raw_ppm):
         log.warning("[GPIO] 측정 구간 무효 (feces_st=%s bm=%s len=%s) -> 시뮬 결과 반환", feces_st, bm, len(H2S_raw_ppm))
+        return measure_sequence_simulation()
+
+    # TIME과 H2S_raw_ppm 길이 불일치 시 (루프 중 예외 등) 시뮬 반환하여 list index out of range 방지
+    if len(TIME) != len(H2S_raw_ppm):
+        log.warning("[GPIO] TIME/H2S_raw_ppm 길이 불일치 (TIME=%s H2S=%s) -> 시뮬 결과 반환", len(TIME), len(H2S_raw_ppm))
         return measure_sequence_simulation()
 
     H2S_raw_ppm_shift, VOCs_raw_ppm_shift, Time_shift = [], [], []
