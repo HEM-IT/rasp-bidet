@@ -438,6 +438,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
 
     adc = init_adc()
     if adc is None:
+        print("[gpio_controller] measure_sequence: ADC 초기화 실패(ABE_helpers/ADCPi 미사용) -> 가스 루프 생략, 시뮬 결과 반환. 이 경우 슬롯 1,2,3 촬영 없음(0번만 촬영됨).", file=sys.stderr)
         log.warning("[GPIO] measure_sequence: ADC 초기화 실패(ABE_helpers/ADCPi 미사용) -> 가스 루프 생략, 시뮬 결과 반환. 이 경우 슬롯 1,2,3 촬영 없음(0번만 촬영됨).")
         return measure_sequence_simulation()
 
@@ -477,6 +478,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
             if idx == 0:
                 log.info("[GPIO] 첫 ADC 읽기: H2S=%.4fV VOCs=%.4fV", h2s_v, vocs_v)
                 print("[gpio_controller] [GPIO] 가스 루프 1회차 ADC 읽기 완료 (이후 약 1초/샘플로 진행, feces_st 감지 시 슬롯 1,2,3 촬영)", file=sys.stderr)
+                print(f"[gpio_controller] [ADC] idx=0 H2S={h2s_v:.4f}V VOCs={vocs_v:.4f}V", file=sys.stderr)
             # 2) utils.filter 또는 filter_voltage → 필터 출력
             if use_legacy_filter:
                 H2S_filtered_v, H2S_b, H2S_a = legacy_filter(h2s_v, H2S_b, H2S_a)
@@ -489,6 +491,10 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
             VOCs_RAW_PPM = (float(VOCs_filtered_v) - VOLTAGE_OFFSET) * 1e6 / VOCS_DIVISOR if VOCS_DIVISOR else 0.0
             H2S_raw_ppm.append(H2S_RAW_PPM)
             VOCs_raw_ppm.append(VOCs_RAW_PPM)
+
+            # ADC 로그: 10샘플마다 전압·PPM 출력 (idx 0은 위에서 이미 출력)
+            if idx > 0 and idx % 10 == 0:
+                print(f"[gpio_controller] [ADC] idx={idx} H2S={h2s_v:.4f}V VOCs={vocs_v:.4f}V -> PPM H2S={H2S_RAW_PPM:.4f} VOCs={VOCs_RAW_PPM:.4f}", file=sys.stderr)
 
             # 4) smooth_peak_h2s, 5) update_feces_st (feces_st==0이고 idx>1일 때만)
             if feces_st == 0 and idx > 1:
@@ -521,11 +527,11 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
                 log.info("[GPIO] 측정 루프 종료 조건: idx=%s feces_st=%s end_tr=%s", idx, feces_st, end_tr)
                 break
             idx += 1
-            # 진행 로그: 초반(1,5,10) 및 10초 간격으로 출력해 '멈춤'처럼 보이는 현상 방지
+            # 진행 로그: 초반(1,5,10) 및 10샘플마다 stderr 출력 (idx 60 이후에도 70,80,90... 계속 출력되도록 idx<=60 제거)
             if idx == 1 or idx == 5 or idx == 10:
                 log.info("[GPIO] 루프 진행 idx=%s feces_st=%s H2S=%.4f VOCs=%.4f (정상 동작 중)", idx, feces_st, H2S_raw_ppm[-1] if H2S_raw_ppm else 0, VOCs_raw_ppm[-1] if VOCs_raw_ppm else 0)
                 print(f"[gpio_controller] [GPIO] 가스 루프 진행 idx={idx} feces_st={feces_st} (정상)", file=sys.stderr)
-            elif idx > 0 and idx % 10 == 0 and idx <= 60:
+            elif idx > 0 and idx % 10 == 0:
                 print(f"[gpio_controller] [GPIO] 가스 루프 진행 idx={idx} feces_st={feces_st}", file=sys.stderr)
                 log.info("[GPIO] 루프 진행 idx=%s feces_st=%s H2S=%.4f VOCs=%.4f", idx, feces_st, H2S_raw_ppm[-1] if H2S_raw_ppm else 0, VOCs_raw_ppm[-1] if VOCs_raw_ppm else 0)
             elif idx > 0 and idx % 50 == 0:

@@ -10,6 +10,7 @@ API payload: process_sensor_data가 gas_controller 반환값에서 스키마 필
 """
 import os
 import sys
+import logging
 
 # 한글 로그 깨짐 방지: stdout/stderr를 UTF-8로 고정 (subprocess/터미널 수신 시 인코딩 일치)
 def _ensure_utf8_stream(stream):
@@ -26,6 +27,20 @@ def _ensure_utf8_stream(stream):
 
 _ensure_utf8_stream(sys.stdout)
 _ensure_utf8_stream(sys.stderr)
+
+def _setup_logging():
+    level_name = (os.environ.get("LOG_LEVEL") or os.environ.get("GPIO_LOG_LEVEL") or "").strip().upper()
+    if os.environ.get("GPIO_DEBUG") in ("1", "true", "yes"):
+        level_name = "DEBUG"
+    level = getattr(logging, level_name, None) if level_name else logging.INFO
+    if not isinstance(level, int):
+        level = logging.INFO
+    fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    logging.basicConfig(level=level, format=fmt, datefmt="%H:%M:%S", stream=sys.stderr)
+
+
+_setup_logging()
+
 import json
 import random
 import time
