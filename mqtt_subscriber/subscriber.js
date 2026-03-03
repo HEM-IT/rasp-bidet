@@ -126,6 +126,10 @@ function runGpioController(payload) {
       ...process.env,
       DEVICE_ID,
       MQTT_PAYLOAD: typeof payload === 'string' ? payload : JSON.stringify(payload || {}),
+      // 한글 로그 깨짐 방지: Python 자식 프로세스가 stdout/stderr를 UTF-8로 출력하도록 유도
+      PYTHONIOENCODING: 'utf-8',
+      LANG: process.env.LANG || 'C.UTF-8',
+      LC_ALL: process.env.LC_ALL || 'C.UTF-8',
     };
     if (process.env.GPIO_SIMULATION !== undefined) {
       env.GPIO_SIMULATION = process.env.GPIO_SIMULATION;
@@ -135,17 +139,18 @@ function runGpioController(payload) {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const utf8 = 'utf8';
     let stdout = '';
     let stderr = '';
     py.stdout?.on('data', (d) => {
-      const s = d.toString();
+      const s = typeof d === 'string' ? d : d.toString(utf8);
       stdout += s;
-      process.stdout.write(s);
+      process.stdout.write(s, utf8);
     });
     py.stderr?.on('data', (d) => {
-      const s = d.toString();
+      const s = typeof d === 'string' ? d : d.toString(utf8);
       stderr += s;
-      process.stderr.write(s);
+      process.stderr.write(s, utf8);
     });
     py.on('close', (code) => {
       if (code !== 0) reject(new Error(`gpio_controller exit ${code}: ${stderr || stdout}`));

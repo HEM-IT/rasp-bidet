@@ -40,6 +40,11 @@ export TEST_PROFILE_ID="${TEST_PROFILE_ID:-14}"
 # 디바이스 상태 API 주소 (subscriber 기동 시 /device/status 등록용, 없으면 52.78.222.49:3001)
 export DATA_API_URL="${DATA_API_URL:-http://52.78.222.49:3001}"
 
+# 한글 로그 인코딩: gpio_controller(stderr) 한글이 깨지면 아래 주석 해제
+export PYTHONIOENCODING=utf-8
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+
 # 시뮬레이션 모드: .env 의 GPIO_SIMULATION=1 또는 MODE/TEST/ENV 로 설정 (gpio_controller에 전달됨)
 if [ -n "$GPIO_SIMULATION" ]; then
   export GPIO_SIMULATION

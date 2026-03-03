@@ -466,6 +466,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
 
     gc.collect()
     log.info("[GPIO] 측정 루프 진입 MAX_ITER=%s (feces_st 감지 후 idx가 feces_st+%s에 도달하면 슬롯 1,2,3 촬영)", MEASURE_SEQUENCE_MAX_ITER, CAPTURE_IDX_OFFSETS)
+    log.info("[GPIO] 루프 주기=%.1f초/샘플 → 최소 %s초 후 feces_st 판정, 감지 시 추가 %s샘플(약 %.0f초) 후 종료", MEASURE_LOOP_INTERVAL_SEC, bm, end_tr, end_tr * MEASURE_LOOP_INTERVAL_SEC)
 
     try:
         for _ in range(MEASURE_SEQUENCE_MAX_ITER):
@@ -475,6 +476,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
             h2s_v, vocs_v, _ = read_adc_voltages(adc)
             if idx == 0:
                 log.info("[GPIO] 첫 ADC 읽기: H2S=%.4fV VOCs=%.4fV", h2s_v, vocs_v)
+                print("[gpio_controller] [GPIO] 가스 루프 1회차 ADC 읽기 완료 (이후 약 1초/샘플로 진행, feces_st 감지 시 슬롯 1,2,3 촬영)", file=sys.stderr)
             # 2) utils.filter 또는 filter_voltage → 필터 출력
             if use_legacy_filter:
                 H2S_filtered_v, H2S_b, H2S_a = legacy_filter(h2s_v, H2S_b, H2S_a)
@@ -519,7 +521,14 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
                 log.info("[GPIO] 측정 루프 종료 조건: idx=%s feces_st=%s end_tr=%s", idx, feces_st, end_tr)
                 break
             idx += 1
-            if idx > 0 and idx % 50 == 0:
+            # 진행 로그: 초반(1,5,10) 및 10초 간격으로 출력해 '멈춤'처럼 보이는 현상 방지
+            if idx == 1 or idx == 5 or idx == 10:
+                log.info("[GPIO] 루프 진행 idx=%s feces_st=%s H2S=%.4f VOCs=%.4f (정상 동작 중)", idx, feces_st, H2S_raw_ppm[-1] if H2S_raw_ppm else 0, VOCs_raw_ppm[-1] if VOCs_raw_ppm else 0)
+                print(f"[gpio_controller] [GPIO] 가스 루프 진행 idx={idx} feces_st={feces_st} (정상)", file=sys.stderr)
+            elif idx > 0 and idx % 10 == 0 and idx <= 60:
+                print(f"[gpio_controller] [GPIO] 가스 루프 진행 idx={idx} feces_st={feces_st}", file=sys.stderr)
+                log.info("[GPIO] 루프 진행 idx=%s feces_st=%s H2S=%.4f VOCs=%.4f", idx, feces_st, H2S_raw_ppm[-1] if H2S_raw_ppm else 0, VOCs_raw_ppm[-1] if VOCs_raw_ppm else 0)
+            elif idx > 0 and idx % 50 == 0:
                 log.info("[GPIO] 루프 진행 idx=%s feces_st=%s H2S_last=%.4f VOCs_last=%.4f", idx, feces_st, H2S_raw_ppm[-1] if H2S_raw_ppm else 0, VOCs_raw_ppm[-1] if VOCs_raw_ppm else 0)
             elif idx > 0 and idx % 200 == 0:
                 log.debug("[GPIO] 루프 진행 idx=%s feces_st=%s", idx, feces_st)

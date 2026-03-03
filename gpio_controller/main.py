@@ -10,6 +10,22 @@ API payload: process_sensor_data가 gas_controller 반환값에서 스키마 필
 """
 import os
 import sys
+
+# 한글 로그 깨짐 방지: stdout/stderr를 UTF-8로 고정 (subprocess/터미널 수신 시 인코딩 일치)
+def _ensure_utf8_stream(stream):
+    if stream is None:
+        return
+    try:
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        elif getattr(stream, "encoding", "").lower() not in ("utf-8", "utf8"):
+            sys.stderr.write("[gpio_controller] WARN: stdout/stderr UTF-8 reconfigure skipped\n")
+    except Exception:
+        pass
+
+
+_ensure_utf8_stream(sys.stdout)
+_ensure_utf8_stream(sys.stderr)
 import json
 import random
 import time
