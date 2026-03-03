@@ -340,14 +340,7 @@ def main():
 
         time.sleep(3)  # 0번 슬롯 촬영 후 대기 (libcamera 정리 등)
         gc.collect()
-
         
-        if api_base:
-            try:
-                update_device_status(api_base, gas_id, STATUS_MEASURING)
-                print("[SCENARIO] 8. Device status 갱신: measuring", file=sys.stderr)
-            except Exception as e:
-                print(f"[gpio_controller] device status measuring 전송 실패: {e}", file=sys.stderr)
         def _on_capture(slot, d, t):
             print(f"[gpio_controller] [촬영] capture_callback 호출 slot={slot} data_file_name={d} image_time={t}", file=sys.stderr)
             capture_at_slot(d, t, slot, cwd=cwd)
@@ -358,6 +351,14 @@ def main():
         gas_data = measure_sequence(
             gas_id, test_id, capture_callback=_on_capture, simulation=False, pwm=pwm
         )
+
+        if api_base:
+            try:
+                update_device_status(api_base, gas_id, STATUS_MEASURING)
+                print("[SCENARIO] 8. Device status 갱신: measuring", file=sys.stderr)
+            except Exception as e:
+                print(f"[gpio_controller] device status measuring 전송 실패: {e}", file=sys.stderr)
+                
         print(f"[gpio_controller] gas_controller(실측) 완료. 촬영된 슬롯 수: {len(image_times)} (image_times={image_times})", file=sys.stderr)
 
         # 7) 루프 종료 후 Reset_Display (ref MainCode 214-216행)
