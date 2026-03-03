@@ -50,6 +50,11 @@ IMAGE_ANALYSIS_RESULT_BASE = os.environ.get(
 # 형식: {IMAGE_ANALYSIS_RESULT_URL}/{gas_id}/upload/{test_id}
 IMAGE_ANALYSIS_RESULT_URL = os.environ.get("IMAGE_ANALYSIS_RESULT_URL", "").rstrip("/")
 
+# ABElectronics ADC Pi 라이브러리 루트 (ADCPi 폴더의 부모 경로).
+# 설정 시 init_adc()에서 이 경로를 sys.path에 넣어 from ADCPi import ADCPi 사용.
+# 예: /home/pi/ABElectronics_Python3_Libraries 또는 /home/pi/ABElectronics_Python_Libraries
+ABELECTRONICS_LIB_PATH = os.environ.get("ABELECTRONICS_LIB_PATH", "").strip() or None
+
 # DB 접근이 gpio_controller 내부에서 필요할 경우 아래에 개발자 입력
 # DB_HOST = os.environ.get("DB_HOST", "localhost")
 # DB_PORT = int(os.environ.get("DB_PORT", "3306"))

@@ -13,6 +13,7 @@
 import gc
 import logging
 import os
+import sys
 import time
 from datetime import datetime
 from collections import OrderedDict
@@ -317,11 +318,57 @@ def fan_stop(pwm_or_pin, pin=None):
 
 
 # ----- ADC 읽기 (ABE ADCPi, 선택 사용) -----
-# 참고: ABElectronics 라이브러리 (ABE_helpers, ABE_ADCPi)는 라즈베리파이 경로
-# /home/pi/ABElectronics_Python3_Libraries/ 에 설치되어 있어야 함. 없으면 ImportError 발생.
+# 참고: ABElectronics 라이브러리 — 공식(ADCPi) 또는 레거시(ABE_helpers/ABE_ADCPi) 지원.
+# 공식 저장소: https://github.com/abelectronicsuk/ABElectronics_Python_Libraries (Python 3 전용)
+# 경로: pip 설치 시 불필요. 미설치 시 ABELECTRONICS_LIB_PATH 또는 config.ABELECTRONICS_LIB_PATH 에
+# 라이브러리 루트(ADCPi 폴더의 부모) 지정. 문서: docs/ABELECTRONICS_ADCPi_SETUP.md
 def init_adc():
-    """ADCPi 초기화. 실패 시 None 반환."""
+    """ADCPi 초기화. 실패 시 None 반환. 새 API(ADCPi) 우선, 구 API(ABE_helpers/ABE_ADCPi) 폴백."""
     log.info("[GPIO/ADC] init_adc 진입")
+    lib_path = os.environ.get("ABELECTRONICS_LIB_PATH", "").strip() or None
+    if not lib_path:
+        try:
+            import config as _cfg
+            lib_path = getattr(_cfg, "ABELECTRONICS_LIB_PATH", None)
+        except Exception:
+            pass
+    if lib_path and os.path.isdir(lib_path) and lib_path not in sys.path:
+        sys.path.insert(0, lib_path)
+        log.debug("[GPIO/ADC] sys.path에 추가: %s", lib_path)
+
+    # 1) 새 API (공식): from ADCPi import ADCPi, ADCPi(addr, addr2, bitrate)
+    try:
+        from ADCPi import ADCPi
+        log.debug("[GPIO/ADC] ADCPi(새 API) import 성공")
+        adc = ADCPi(0x68, 0x69, 18)
+        adc.set_conversion_mode(0)
+        log.info("[GPIO/ADC] init_adc 성공: ADCPi 초기화 완료 (새 API)")
+        return adc
+    except ImportError:
+        pass
+    except Exception as e:
+        log.warning("[GPIO/ADC] init_adc(새 API) 실패: %s", e)
+
+    # 2) 구 패키지 구조: ADCPi/ABE_ADCPi.py (cannot import name 'ADCPi' from 'ADCPi' 대응)
+    try:
+        from ADCPi.ABE_ADCPi import ADCPi as _ADCPi
+        try:
+            from ABE_helpers import ABEHelpers
+        except ImportError:
+            from ADCPi.ABE_helpers import ABEHelpers
+        log.debug("[GPIO/ADC] ADCPi.ABE_ADCPi import 성공")
+        i2c_helper = ABEHelpers()
+        bus = i2c_helper.get_smbus()
+        adc = _ADCPi(bus, 0x68, 0x69, 18)
+        adc.set_conversion_mode(0)
+        log.info("[GPIO/ADC] init_adc 성공: ADCPi 초기화 완료 (ADCPi.ABE_ADCPi)")
+        return adc
+    except ImportError:
+        pass
+    except Exception as e:
+        log.warning("[GPIO/ADC] init_adc(ADCPi.ABE_ADCPi) 실패: %s", e)
+
+    # 3) 구 API (플랫): ABE_helpers + ABE_ADCPi (루트에 모듈 있는 구조), bus 전달
     try:
         from ABE_helpers import ABEHelpers
         from ABE_ADCPi import ADCPi
@@ -330,10 +377,10 @@ def init_adc():
         bus = i2c_helper.get_smbus()
         adc = ADCPi(bus, 0x68, 0x69, 18)
         adc.set_conversion_mode(0)
-        log.info("[GPIO/ADC] init_adc 성공: ADCPi 초기화 완료")
+        log.info("[GPIO/ADC] init_adc 성공: ADCPi 초기화 완료 (구 API 플랫)")
         return adc
     except ImportError as e:
-        log.warning("[GPIO/ADC] init_adc 실패(모듈 없음): %s — ABE_helpers/ABE_ADCPi 미설치 시 발생. 라즈베리파이 ABElectronics_Python3_Libraries 설치 필요.", e)
+        log.warning("[GPIO/ADC] init_adc 실패(모듈 없음): %s — ADCPi/ABE_* 미설치. docs/ABELECTRONICS_ADCPi_SETUP.md 참고.", e)
         return None
     except Exception as e:
         log.warning("[GPIO/ADC] init_adc 실패: %s", e)
