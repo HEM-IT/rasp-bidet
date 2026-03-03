@@ -23,3 +23,4 @@ ref/
 release_v1/
 
 gpio_controller/docs/*
+gpio_controller/simulate_feces_st_scenario.py

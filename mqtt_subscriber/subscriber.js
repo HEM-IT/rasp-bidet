@@ -139,6 +139,7 @@ function runGpioController(payload) {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    currentGpioProcess = py;
     const utf8 = 'utf8';
     let stdout = '';
     let stderr = '';
@@ -153,6 +154,7 @@ function runGpioController(payload) {
       process.stderr.write(s, utf8);
     });
     py.on('close', (code) => {
+      if (currentGpioProcess === py) currentGpioProcess = null;
       if (code !== 0) reject(new Error(`gpio_controller exit ${code}: ${stderr || stdout}`));
       else resolve({ stdout, stderr });
     });
@@ -161,12 +163,39 @@ function runGpioController(payload) {
 
 function stopGpioController() {
   if (!currentGpioProcess) {
-    log('[SUBSCRIBER] command/measure/stop: 실행 중인 gpio_controller 없음');
+    log('[SUBSCRIBER] command/measurement/stop: 실행 중인 gpio_controller 없음');
     return;
   }
-  log('[SUBSCRIBER] command/measure/stop: gpio_controller 종료 시도');
-  currentGpioProcess.kill('SIGTERM');
+  log('[SUBSCRIBER] command/measurement/stop: gpio_controller 및 자식 프로세스 종료 시도');
+  const proc = currentGpioProcess;
   currentGpioProcess = null;
+  try {
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/T', '/F', '/PID', proc.pid.toString()], { stdio: 'ignore' }).on('error', () => {
+        try { proc.kill('SIGKILL'); } catch (_) {}
+      });
+    } else {
+      proc.kill('SIGTERM');
+    }
+  } catch (e) {
+    try { proc.kill('SIGKILL'); } catch (_) {}
+  }
+}
+
+/**
+ * subscriber.js 재실행: 새 Node 프로세스로 subscriber 기동 후 현재 프로세스 종료
+ */
+function restartSubscriber() {
+  const subscriberPath = path.join(__dirname, 'subscriber.js');
+  const child = spawn(process.execPath, [subscriberPath], {
+    detached: true,
+    stdio: 'ignore',
+    cwd: __dirname,
+    env: process.env,
+  });
+  child.unref();
+  log('[SUBSCRIBER] command/measurement/stop: subscriber 재시작됨 (PID=', child.pid, '), 현재 프로세스 종료');
+  process.exit(0);
 }
 
 /**
@@ -271,6 +300,13 @@ client.on('message', async (topic, payload) => {
     const s = payload.toString();
     if (s) payloadObj = JSON.parse(s);
   } catch (_) {}
+
+  if (relative === 'command/measurement/stop') {
+    log('[SUBSCRIBER] command/measurement/stop 수신 → gpio_controller 종료 후 subscriber 재시작');
+    stopGpioController();
+    client.end(false, () => restartSubscriber());
+    return;
+  }
 
   const isStartCommand =
     relative === 'measurement/start' ||
