@@ -381,7 +381,9 @@ def main():
                 print(f"[gpio_controller] [업로드] 슬롯 {slot} 건너뜀: 파일 없음 path={path}", file=sys.stderr)
                 upload_results.append((slot, False, filename, "파일 없음"))
                 continue
-            ok, resp = upload_image_to_server(path, filename)
+            ok, resp, status = upload_image_to_server(path, filename)
+            if ok and status == 200:
+                print(f"[gpio_controller] [업로드] HONG_URL(IMAGE_UPLOAD_URL) 전송 성공 (status=200) 슬롯={slot} filename={filename}", file=sys.stderr)
             print(f"[gpio_controller] [업로드] 슬롯 {slot} filename={filename} ok={ok}", file=sys.stderr)
             upload_results.append((slot, ok, filename, resp))
         last_upload_ok = None

@@ -109,7 +109,7 @@ def upload_captured_slots(data_file_name, image_times, slots_to_upload=None, cwd
         if not os.path.isfile(path):
             results.append((slot, False, filename, "파일 없음"))
             continue
-        ok, resp = _upload_image_to_server(path, filename)
+        ok, resp, _ = _upload_image_to_server(path, filename)
         results.append((slot, ok, filename, resp))
     return results
 
@@ -157,7 +157,7 @@ def send_pending_images_from_folder(image_file_dir=None, remove_on_success=True)
         if not fn.lower().endswith(".jpg"):
             continue
         path = os.path.join(image_file_dir, fn)
-        ok, _ = _upload_image_to_server(path, fn)
+        ok, _, _ = _upload_image_to_server(path, fn)
         results.append((fn, ok))
         if ok and remove_on_success:
             try:
@@ -305,11 +305,11 @@ def _upload_image_to_server(file_path, filename):
     ref/servlet.py: 'file' 키로 파일 수신, filename으로 gas_id/test_id/촬영시각 파싱.
     :param file_path: 로컬 파일 경로
     :param filename: 서버에 보낼 파일명 (gas_id+test_id-YYYYmmddHHMMSS-.jpg, servlet strptime 호환)
-    :return: (success: bool, response_data or error_message)
+    :return: (success: bool, response_data or error_message, status_code or None)
     """
     url = config.IMAGE_UPLOAD_URL.rstrip("/")
     if not url:
-        return False, "IMAGE_UPLOAD_URL 미설정"
+        return False, "IMAGE_UPLOAD_URL 미설정", None
 
     boundary = "----WebKitFormBoundary" + os.urandom(16).hex()
     body_start = (
@@ -323,7 +323,7 @@ def _upload_image_to_server(file_path, filename):
         with open(file_path, "rb") as f:
             file_data = f.read()
     except OSError as e:
-        return False, str(e)
+        return False, str(e), None
 
     body = body_start.encode("utf-8") + file_data + body_end.encode("utf-8")
     req = urllib.request.Request(
@@ -337,9 +337,12 @@ def _upload_image_to_server(file_path, filename):
     )
     try:
         resp = urllib.request.urlopen(req, timeout=30)
-        return True, json.loads(resp.read().decode())
+        status = getattr(resp, "status", 200)
+        return True, json.loads(resp.read().decode()), status
+    except urllib.error.HTTPError as e:
+        return False, str(e), e.code
     except Exception as e:
-        return False, str(e)
+        return False, str(e), None
 
 
 # Hong 서버(IMAGE_UPLOAD_URL) 업로드용 공개 API — main.py 등에서 직접 호출
@@ -390,7 +393,7 @@ def capture_once(gas_id, test_id, simulation=False):
         print("[camera_controller] 촬영 실패 (의사코드 구현 필요)", file=sys.stderr)
         return out
 
-    ok, resp = _upload_image_to_server(save_path, filename)
+    ok, resp, _ = _upload_image_to_server(save_path, filename)
     out["uploaded"] = ok
     out["upload_response"] = resp if ok else {"error": resp}
     if ok:
