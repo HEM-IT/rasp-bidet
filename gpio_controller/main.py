@@ -59,6 +59,7 @@ from gas_controller import (
     measure_sequence,
     measure_sequence_simulation,
     fan_start,
+    cleanup_gpio as gas_cleanup_gpio,
 )
 from camera_controller import (
     capture_once as camera_capture_once,
@@ -69,7 +70,7 @@ from camera_controller import (
     fetch_image_analysis_result,
     build_image_analysis_table_payload_for_api,
 )
-from utils import process_sensor_data, Camera_LED
+from utils import process_sensor_data, Camera_LED, cleanup_all_led_gpio
 from schema import MEASUREMENT_KEYS
 try:
     from display_function import SSD1306_DISPLAY, Reset_Display
@@ -92,6 +93,15 @@ _exit_gas_id = None
 
 
 def _sigint_handler(signum, frame):
+    print("[gpio_controller] Ctrl+C 수신 → GPIO 안정화 후 종료", file=sys.stderr)
+    try:
+        gas_cleanup_gpio()
+    except Exception as e:
+        print(f"[gpio_controller] Ctrl+C: gas GPIO 정리 예외(무시): {e}", file=sys.stderr)
+    try:
+        cleanup_all_led_gpio()
+    except Exception as e:
+        print(f"[gpio_controller] Ctrl+C: LED GPIO 정리 예외(무시): {e}", file=sys.stderr)
     if _exit_api_base and _exit_gas_id:
         try:
             update_device_status(_exit_api_base, _exit_gas_id, STATUS_READY)
@@ -294,6 +304,10 @@ def main():
     _exit_gas_id = gas_id
     try:
         signal.signal(signal.SIGINT, _sigint_handler)
+    except (ValueError, OSError):
+        pass
+    try:
+        signal.signal(signal.SIGTERM, _sigint_handler)
     except (ValueError, OSError):
         pass
     print(f"[SCENARIO] 6. gpio_controller: PWM fan → gas_controller + camera_controller (레거시 순서) | simulation={use_simulation}", file=sys.stderr)

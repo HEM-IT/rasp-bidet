@@ -368,6 +368,26 @@ def fan_stop(pwm_or_pin, pin=None):
         log.warning("[GPIO] fan_stop 예외(무시): %s", e)
 
 
+def cleanup_gpio():
+    """
+    Ctrl+C 등 종료 시 gas_controller에서 사용한 GPIO를 안정화.
+    팬 핀(FAN_PIN)을 LOW로 두고 해제. RPi.GPIO 미사용 환경에서는 무시.
+    """
+    try:
+        import RPi.GPIO as GPIO
+        GPIO.setmode(GPIO.BCM)
+        fan_stop(FAN_PIN)  # PWM 없이도 핀 번호만으로 LOW 출력
+        try:
+            GPIO.cleanup(FAN_PIN)
+        except (TypeError, AttributeError):
+            GPIO.cleanup()  # 구버전은 cleanup(channel) 미지원
+        log.info("[GPIO] cleanup_gpio: FAN_PIN=%s 안정화 완료", FAN_PIN)
+    except ImportError:
+        pass
+    except Exception as e:
+        log.warning("[GPIO] cleanup_gpio 예외(무시): %s", e)
+
+
 # ----- ADC 읽기 (ABE ADCPi, 선택 사용) -----
 # 참고: ABElectronics 라이브러리 — 공식(ADCPi) 또는 레거시(ABE_helpers/ABE_ADCPi) 지원.
 # 공식 저장소: https://github.com/abelectronicsuk/ABElectronics_Python_Libraries (Python 3 전용)

@@ -183,22 +183,6 @@ function stopGpioController() {
 }
 
 /**
- * subscriber.js 재실행: 새 Node 프로세스로 subscriber 기동 후 현재 프로세스 종료
- */
-function restartSubscriber() {
-  const subscriberPath = path.join(__dirname, 'subscriber.js');
-  const child = spawn(process.execPath, [subscriberPath], {
-    detached: true,
-    stdio: 'ignore',
-    cwd: __dirname,
-    env: process.env,
-  });
-  child.unref();
-  log('[SUBSCRIBER] command/measurement/stop: subscriber 재시작됨 (PID=', child.pid, '), 현재 프로세스 종료');
-  process.exit(0);
-}
-
-/**
  * 현재 디바이스 상태를 API로 전송 (웹에서 3~5초 간격 command/status 수신 시 호출)
  */
 function reportStatusToApi(payloadObj) {
@@ -302,7 +286,7 @@ client.on('message', async (topic, payload) => {
   } catch (_) {}
 
   if (relative === 'command/measurement/stop') {
-    log('[SUBSCRIBER] command/measurement/stop 수신 → device status=stop 전송 후 gpio_controller 종료, subscriber 재시작');
+    log('[SUBSCRIBER] command/measurement/stop 수신 → device status=stop 전송 후 gpio_controller만 종료');
     const statusUrl = `${DATA_API_URL}${DEVICE_STATUS_PATH}`;
     try {
       await fetch(statusUrl, {
@@ -314,7 +298,7 @@ client.on('message', async (topic, payload) => {
       logErr('[SUBSCRIBER] device status stop PATCH 오류:', e.message);
     }
     stopGpioController();
-    client.end(false, () => restartSubscriber());
+    log('[SCENARIO] 9. 다시 measurement/start 수신 대기 중...');
     return;
   }
 

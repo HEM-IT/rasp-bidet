@@ -179,6 +179,39 @@ def WIFI_LED(ONOFF):
     elif ONOFF == 'OFF':
         GPIO.output(24,False)
 
+
+# LED/카메라 등 utils에서 사용하는 GPIO 핀 (BCM 번호). Ctrl+C 종료 시 안정화용.
+LED_GPIO_PINS = (17, 27, 22, 23, 24)
+
+
+def cleanup_all_led_gpio():
+    """
+    Ctrl+C 등 종료 시 utils에서 사용한 GPIO(LED·카메라 등)를 LOW로 두고 해제.
+    RPi.GPIO 미사용 환경에서는 무시.
+    """
+    if GPIO is None:
+        return
+    try:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+        for pin in LED_GPIO_PINS:
+            try:
+                GPIO.setup(pin, GPIO.OUT)
+                GPIO.output(pin, False)
+                try:
+                    GPIO.cleanup(pin)
+                except (TypeError, AttributeError):
+                    pass
+            except Exception:
+                pass
+        try:
+            GPIO.cleanup()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
 def mean(data):
     ans = 0
     ans = sum(data)/len(data)

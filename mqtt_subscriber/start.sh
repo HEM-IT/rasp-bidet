@@ -45,6 +45,13 @@ export PYTHONIOENCODING=utf-8
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 
+# ABElectronics 라이브러리 경로 (이미 등록돼 있으면 추가하지 않음)
+ABE_LIB="/home/pi/ABElectronics_Python3_Libraries"
+case ":$PYTHONPATH:" in
+  *":$ABE_LIB:"*) ;;
+  *) export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}$ABE_LIB" ;;
+esac
+
 # 시뮬레이션 모드: .env 의 GPIO_SIMULATION=1 또는 MODE/TEST/ENV 로 설정 (gpio_controller에 전달됨)
 if [ -n "$GPIO_SIMULATION" ]; then
   export GPIO_SIMULATION
