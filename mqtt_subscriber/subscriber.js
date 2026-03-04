@@ -302,7 +302,17 @@ client.on('message', async (topic, payload) => {
   } catch (_) {}
 
   if (relative === 'command/measurement/stop') {
-    log('[SUBSCRIBER] command/measurement/stop 수신 → gpio_controller 종료 후 subscriber 재시작');
+    log('[SUBSCRIBER] command/measurement/stop 수신 → device status=stop 전송 후 gpio_controller 종료, subscriber 재시작');
+    const statusUrl = `${DATA_API_URL}${DEVICE_STATUS_PATH}`;
+    try {
+      await fetch(statusUrl, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gas_id: DEVICE_ID, status: 'stop' }),
+      });
+    } catch (e) {
+      logErr('[SUBSCRIBER] device status stop PATCH 오류:', e.message);
+    }
     stopGpioController();
     client.end(false, () => restartSubscriber());
     return;
@@ -336,6 +346,13 @@ client.on('close', () => log('[SUBSCRIBER] 연결 종료'));
 client.on('error', (err) => logErr('[SUBSCRIBER] 오류', err && (err.message || err.code || err)));
 
 process.on('SIGINT', () => {
-  log('[SUBSCRIBER] 종료 중...');
-  client.end(true, () => process.exit(0));
+  log('[SUBSCRIBER] Ctrl+C 종료 중... device status → ready 전송');
+  const statusUrl = `${DATA_API_URL}${DEVICE_STATUS_PATH}`;
+  fetch(statusUrl, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ gas_id: DEVICE_ID, status: 'ready' }),
+  }).catch((e) => logErr('[SUBSCRIBER] device status ready PATCH 오류:', e.message)).finally(() => {
+    client.end(true, () => process.exit(0));
+  });
 });

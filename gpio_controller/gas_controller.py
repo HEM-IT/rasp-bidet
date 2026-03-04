@@ -13,7 +13,6 @@
 import gc
 import logging
 import os
-import signal
 import sys
 import time
 from datetime import datetime
@@ -36,33 +35,26 @@ try:
     from device_status_api import (
         ensure_ready_then_set,
         update_device_status,
+        get_current_status,
         STATUS_DETECTING,
         STATUS_MEASURING,
         STATUS_FAIL,
+        STATUS_STOP,
+        STATUS_READY,
     )
 except ImportError:
-    ensure_ready_then_set = update_device_status = None
+    ensure_ready_then_set = update_device_status = get_current_status = None
     STATUS_DETECTING = "detecting"
     STATUS_MEASURING = "measuring"
     STATUS_FAIL = "fail"
+    STATUS_STOP = "stop"
+    STATUS_READY = "ready"
 
 try:
     import numpy as np
     _HAS_NUMPY = True
 except ImportError:
     _HAS_NUMPY = False
-
-# ----- SIGTERM 처리 (subscriber stop 명령 시 정상 종료) -----
-# 시그널 핸들러는 try에서 한 번만 등록하지만, 등록 후에는 커널이 프로세스에 SIGTERM을 보낼 때마다
-# 비동기로 핸들러를 호출한다. for 문 전체 동안 수신 가능하며, 핸들러가 _sigterm_received를 True로 설정하면
-# 다음 루프 선두(또는 sleep 직후 체크)에서 break로 조기 종료한다.
-_sigterm_received = False
-
-
-def _sigterm_handler(signum, frame):
-    global _sigterm_received
-    _sigterm_received = True
-
 
 # ----- 레거시 상수 -----
 BM_TIME = int(os.environ.get("BM_TIME", "8"))           # baseline 구간 길이 (샘플 수)
@@ -522,20 +514,21 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
 
     status_detecting_sent = False
     status_measuring_sent = False
+    stop_requested = False
 
     try:
-        global _sigterm_received
-        _sigterm_received = False
-        try:
-            old_sigterm = signal.signal(signal.SIGTERM, _sigterm_handler)
-        except (ValueError, OSError):
-            old_sigterm = signal.SIG_DFL
-
         for _ in range(MEASURE_SEQUENCE_MAX_ITER):
-            if _sigterm_received:
-                log.info("[GPIO] SIGTERM 수신 → 측정 루프 조기 종료")
-                print("[gpio_controller] [GPIO] SIGTERM 수신, 측정 루프 조기 종료", file=sys.stderr)
-                break
+            # device status 폴링: stop 수신 시 루프 탈출 후 프로세스 종료 (subscriber가 PATCH stop 후 재시작)
+            if api_base and get_current_status is not None:
+                try:
+                    current = get_current_status(api_base, gas_id)
+                    if current == STATUS_STOP:
+                        stop_requested = True
+                        log.info("[GPIO] device status=stop 수신 → 측정 루프 조기 종료")
+                        print("[gpio_controller] [GPIO] device status=stop 수신, 측정 루프 조기 종료", file=sys.stderr)
+                        break
+                except Exception as e:
+                    log.debug("[GPIO] device status 조회 실패(무시): %s", e)
 
             start_time = time.time()
 
@@ -562,8 +555,13 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
                         print("[SCENARIO] 7. Device status 갱신: detecting (gas_controller)", file=sys.stderr)
                         # INSERT_YOUR_CODE
                         time.sleep(8)
-                        if _sigterm_received:
-                            break
+                        if api_base and get_current_status is not None:
+                            try:
+                                if get_current_status(api_base, gas_id) == STATUS_STOP:
+                                    stop_requested = True
+                                    break
+                            except Exception:
+                                pass
                     except Exception as e:
                         log.warning("[GPIO] device status detecting 전송 실패: %s", e)
                 status_detecting_sent = True
@@ -663,20 +661,28 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
                 sleep_sec = MEASURE_LOOP_INTERVAL_SEC - elapsed
                 if sleep_sec > 0:
                     time.sleep(sleep_sec)
-                    if _sigterm_received:
-                        break
+                    if api_base and get_current_status is not None:
+                        try:
+                            if get_current_status(api_base, gas_id) == STATUS_STOP:
+                                stop_requested = True
+                                break
+                        except Exception:
+                            pass
                 elif idx > 0 and idx % 50 == 0:
                     print("[GPIO] 루프 주기 초과 idx=%s elapsed=%.2fs (API/캡처 지연 시 전체 측정 시간 증가)", idx, elapsed)
     finally:
-        try:
-            signal.signal(signal.SIGTERM, old_sigterm)
-        except (ValueError, OSError):
-            pass
         if pwm is not None:
             fan_stop(pwm)
             log.info("[GPIO] 팬 PWM 정지 완료")
         log.info("[GPIO] 측정 루프 종료 idx=%s len(H2S_raw_ppm)=%s", idx, len(H2S_raw_ppm))
-        if _sigterm_received:
+        if stop_requested:
+            if api_base and update_device_status is not None:
+                try:
+                    update_device_status(api_base, gas_id, STATUS_READY)
+                    log.info("[GPIO] stop 종료 전 device status → ready (재실행 대기)")
+                    print("[gpio_controller] [GPIO] stop 종료 전 device status → ready (재실행 대기)", file=sys.stderr)
+                except Exception as e:
+                    log.warning("[GPIO] device status ready 전송 실패: %s", e)
             sys.exit(0)
 
     # 종료 후: 시프트·오프셋·trapz·비율 계산

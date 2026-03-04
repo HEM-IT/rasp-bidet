@@ -14,11 +14,13 @@ import ssl
 import config
 
 # 상태 순서: ready → detecting → measuring → completed (캡처 시점에 fail 사용)
+# stop: 외부에서 측정 중단 지시 시 사용 (gpio_controller가 GET으로 확인 후 루프 탈출)
 STATUS_READY = "ready"
 STATUS_DETECTING = "detecting"
 STATUS_MEASURING = "measuring"
 STATUS_COMPLETED = "completed"
 STATUS_FAIL = "fail"
+STATUS_STOP = "stop"
 
 
 def _request(method, url, body=None, timeout=10):
@@ -55,6 +57,17 @@ def get_device_status(api_base_url, gas_id):
         return _request("GET", url)
     except Exception:
         return None, None
+
+
+def get_current_status(api_base_url, gas_id):
+    """
+    gas_id에 해당하는 디바이스의 현재 status 값 조회 (stop 수신 여부 확인용).
+    :return: response_body.status 문자열 또는 None (요청 실패 시)
+    """
+    code, body = get_device_status(api_base_url, gas_id)
+    if body is not None and isinstance(body, dict):
+        return body.get("status")
+    return None
 
 
 def create_device_status(api_base_url, gas_id, status=STATUS_READY):
