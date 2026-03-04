@@ -597,7 +597,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
                         log.info("[GPIO] 캡처 요청 slot=%s idx=%s (feces_st+offset=%s) image_time=%s", slot_one_based, idx, offset, image_time_str)
                         capture_callback(slot_one_based, data_file_name, image_time_str)
                         break
-            else:
+            elif idx == MEASURE_SEQUENCE_MAX_ITER:
                 if api_base and update_device_status is not None:
                     try:
                         update_device_status(api_base, gas_id, STATUS_FAIL)
