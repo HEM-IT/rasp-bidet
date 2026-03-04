@@ -446,7 +446,8 @@ def read_adc_voltages(adc, ch_h2s=1, ch_vocs=2, ch_switch=8):
 
 
 # ----- 명령어 1회 수신 시 1회 실행 (레거시와 동일 처리 순서, 시계열 대기 없음) -----
-MEASURE_SEQUENCE_MAX_ITER = int(os.environ.get("MEASURE_SEQUENCE_MAX_ITER", "3000"))
+# 실제 종료는 feces_st + END_TR(180)에서 break. 500회 ≈ 1초/샘플 시 약 8분 상한(정상 시 200~250회).
+MEASURE_SEQUENCE_MAX_ITER = int(os.environ.get("MEASURE_SEQUENCE_MAX_ITER", "500"))
 
 
 def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, pwm=None, api_base=None):
@@ -615,12 +616,15 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
             elif idx > 0 and idx % 200 == 0:
                 log.debug("[GPIO] 루프 진행 idx=%s feces_st=%s", idx, feces_st)
 
-            # 루프 주기: 1Hz(1초/샘플)로 맞추면 8샘플=8초 베이스라인, 감지 후 180샘플=3분 측정 (MEASURE_LOOP_INTERVAL_SEC=1.0)
+            # 루프 주기: 1Hz(1초/샘플) 목표. elapsed 보정으로 매 iteration을 MEASURE_LOOP_INTERVAL_SEC(1초)에 맞춤.
+            # (고정 time.sleep(1)은 처리시간+1초가 되어 주기가 늘어나므로 사용하지 않음. elapsed>1초면 sleep 없음 → 주기 초과 시 로그)
             if MEASURE_LOOP_INTERVAL_SEC > 0:
                 elapsed = time.time() - start_time
                 sleep_sec = MEASURE_LOOP_INTERVAL_SEC - elapsed
                 if sleep_sec > 0:
                     time.sleep(sleep_sec)
+                elif idx > 0 and idx % 50 == 0:
+                    print("[GPIO] 루프 주기 초과 idx=%s elapsed=%.2fs (API/캡처 지연 시 전체 측정 시간 증가)", idx, elapsed)
     finally:
         if pwm is not None:
             fan_stop(pwm)
