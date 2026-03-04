@@ -27,6 +27,23 @@ except ImportError:
     legacy_filter = None
 
 try:
+    import config
+except ImportError:
+    config = None
+
+try:
+    from device_status_api import (
+        ensure_ready_then_set,
+        update_device_status,
+        STATUS_DETECTING,
+        STATUS_MEASURING,
+    )
+except ImportError:
+    ensure_ready_then_set = update_device_status = None
+    STATUS_DETECTING = "detecting"
+    STATUS_MEASURING = "measuring"
+
+try:
     import numpy as np
     _HAS_NUMPY = True
 except ImportError:
@@ -432,11 +449,14 @@ def read_adc_voltages(adc, ch_h2s=1, ch_vocs=2, ch_switch=8):
 MEASURE_SEQUENCE_MAX_ITER = int(os.environ.get("MEASURE_SEQUENCE_MAX_ITER", "3000"))
 
 
-def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, pwm=None):
+def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, pwm=None, api_base=None):
     """
     명령어 기반 1회 실행. 레거시 MainCode와 동일한 처리 순서로 동작.
 
     시나리오 (MEASURE_LOOP_INTERVAL_SEC=1.0 기준):
+    - idx==0: fan_stop 후 ADC 읽기 진입 시 fan_start.
+    - idx > BM_TIME(8): device status → detecting (1회).
+    - idx >= 20: fan_stop, device status → measuring (1회), 이후 MEASURE_SEQUENCE_MAX_ITER 계속.
     1) 호출 직후: 실시간 ADC 측정 루프 진입. 매 루프마다 ADC 읽기 → filter → PPM append.
     2) 8초간 베이스라인: 루프 주기가 1초이면 최소 8샘플 = 8초 분량 수집 후 update_feces_st에서만 감지 가능(idx>BM_time).
     3) 가스 감지 후: feces_st 설정 시점부터 추가로 end_tr(기본 180)샘플 = 3분 측정 후 종료.
@@ -447,10 +467,11 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
           → smooth_peak_h2s → update_feces_st → idx==feces_st+end_tr 시 종료
           → 시프트·오프셋·trapz·비율 계산.
     - capture_callback(slot, data_file_name, image_time_str): slot 1,2,3 촬영 시점에 호출.
-    - pwm: 이미 main 등에서 fan_start()로 켠 PWM 객체를 넘기면, 여기서 fan_start() 생략하고
-          루프 종료 시 이 객체로 fan_stop() 호출. None이면 내부에서 fan_start() 후 종료 시 fan_stop().
+    - pwm: 외부에서 넘기면 루프 시작 시 idx==0에서 fan_stop 후 무시하고, ADC 진입 시 내부에서 fan_start. None이면 내부에서 전부 제어.
+    - api_base: None이면 config.DATA_API_URL 사용. device status(detecting/measuring) 갱신 시 사용.
     """
     log.info("[GPIO] measure_sequence 시작: gas_id=%s test_id=%s simulation=%s", gas_id, test_id, simulation)
+
     if simulation:
         log.debug("[GPIO] 시뮬레이션 모드 -> measure_sequence_simulation() 반환")
         return measure_sequence_simulation()
@@ -461,15 +482,8 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
         log.warning("[GPIO] measure_sequence: ADC 초기화 실패(ABE_helpers/ADCPi 미사용) -> 가스 루프 생략, 시뮬 결과 반환. 이 경우 슬롯 1,2,3 촬영 없음(0번만 촬영됨).")
         return measure_sequence_simulation()
 
-    if pwm is None:
-        try:
-            pwm = fan_start()
-            log.info("[GPIO] 팬 PWM 시작 성공 (pin=%s)", FAN_PIN)
-        except Exception as e:
-            log.warning("[GPIO] fan_start 예외: %s", e)
-            pwm = None
-    else:
-        log.info("[GPIO] 외부에서 전달된 PWM 사용")
+    if api_base is None and config is not None:
+        api_base = getattr(config, "DATA_API_URL", None)
 
     data_file_name = f"{gas_id}{test_id}"
     log.info("[GPIO] data_file_name=%s use_legacy_filter=%s CAPTURE_IDX_OFFSETS=%s", data_file_name, legacy_filter is not None, CAPTURE_IDX_OFFSETS)
@@ -488,16 +502,59 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
     log.info("[GPIO] 측정 루프 진입 MAX_ITER=%s (feces_st 감지 후 idx가 feces_st+%s에 도달하면 슬롯 1,2,3 촬영)", MEASURE_SEQUENCE_MAX_ITER, CAPTURE_IDX_OFFSETS)
     log.info("[GPIO] 루프 주기=%.1f초/샘플 → 최소 %s초 후 feces_st 판정, 감지 시 추가 %s샘플(약 %.0f초) 후 종료", MEASURE_LOOP_INTERVAL_SEC, bm, end_tr, end_tr * MEASURE_LOOP_INTERVAL_SEC)
 
+    status_detecting_sent = False
+    status_measuring_sent = False
+
     try:
         for _ in range(MEASURE_SEQUENCE_MAX_ITER):
             start_time = time.time()
 
-            # 1) ADC 읽기
+            # 1) idx==0: fan_stop 후 ADC 읽기 진입 시 fan_start
+            if idx == 0:
+                if pwm is not None:
+                    fan_stop(pwm)
+                    pwm = None
+                else:
+                    fan_stop(FAN_PIN)
+                try:
+                    pwm = fan_start()
+                    log.info("[GPIO] ADC 읽기 진입 시 fan_start (pin=%s)", FAN_PIN)
+                except Exception as e:
+                    log.warning("[GPIO] fan_start 예외: %s", e)
+                    pwm = None
+
+            # 2) idx > BM_TIME(8): device status → detecting (1회)
+            if idx > bm and not status_detecting_sent:
+                if api_base and ensure_ready_then_set is not None:
+                    try:
+                        ensure_ready_then_set(api_base, gas_id, STATUS_DETECTING)
+                        log.info("[GPIO] Device status 갱신: detecting (idx>BM_TIME)")
+                        print("[SCENARIO] 7. Device status 갱신: detecting (gas_controller)", file=sys.stderr)
+                    except Exception as e:
+                        log.warning("[GPIO] device status detecting 전송 실패: %s", e)
+                status_detecting_sent = True
+
+            # 3) idx >= 20: fan_stop, device status → measuring (1회), 이후 루프 계속
+            if idx >= 20 and not status_measuring_sent:
+                if pwm is not None:
+                    fan_stop(pwm)
+                    pwm = None
+                if api_base and update_device_status is not None:
+                    try:
+                        update_device_status(api_base, gas_id, STATUS_MEASURING)
+                        log.info("[GPIO] Device status 갱신: measuring (idx>=20)")
+                        print("[SCENARIO] 8. Device status 갱신: measuring (gas_controller)", file=sys.stderr)
+                    except Exception as e:
+                        log.warning("[GPIO] device status measuring 전송 실패: %s", e)
+                status_measuring_sent = True
+
+            # 4) ADC 읽기
             h2s_v, vocs_v, _ = read_adc_voltages(adc)
             if idx == 0:
                 log.info("[GPIO] 첫 ADC 읽기: H2S=%.4fV VOCs=%.4fV", h2s_v, vocs_v)
                 print("[gpio_controller] [GPIO] 가스 루프 1회차 ADC 읽기 완료 (이후 약 1초/샘플로 진행, feces_st 감지 시 슬롯 1,2,3 촬영)", file=sys.stderr)
                 print(f"[gpio_controller] [ADC] idx=0 H2S={h2s_v:.4f}V VOCs={vocs_v:.4f}V", file=sys.stderr)
+
             # 2) utils.filter 또는 filter_voltage → 필터 출력
             if use_legacy_filter:
                 H2S_filtered_v, H2S_b, H2S_a = legacy_filter(h2s_v, H2S_b, H2S_a)
@@ -505,6 +562,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
             else:
                 H2S_filtered_v, H2S_b, _ = filter_voltage(h2s_v, H2S_b)
                 VOCs_filtered_v, VOCs_b, _ = filter_voltage(vocs_v, VOCs_b)
+            
             # 3) H2S_RAW_PPM / VOCs_RAW_PPM append
             H2S_RAW_PPM = (float(H2S_filtered_v) - VOLTAGE_OFFSET) * 1e6 / H2S_DIVISOR if H2S_DIVISOR else 0.0
             VOCs_RAW_PPM = (float(VOCs_filtered_v) - VOLTAGE_OFFSET) * 1e6 / VOCS_DIVISOR if VOCS_DIVISOR else 0.0
@@ -519,11 +577,9 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
             if feces_st == 0 and idx > 1:
                 temp_stt = idx - 1
                 smooth_peak_h2s(H2S_raw_ppm, temp_stt)
-                feces_st, noise_1_list, noise_5_list = update_feces_st(
-                    idx, H2S_raw_ppm, noise_1_list, noise_5_list, feces_st, bm
-                )
+                feces_st, noise_1_list, noise_5_list = update_feces_st(idx, H2S_raw_ppm, noise_1_list, noise_5_list, feces_st, bm)
                 if feces_st != 0:
-                    log.info("[GPIO] feces_st 감지: idx=%s -> feces_st=%s (이후 idx=%s,%s,%s에서 슬롯 1,2,3 촬영)", idx, feces_st, feces_st + CAPTURE_IDX_OFFSETS[0], feces_st + CAPTURE_IDX_OFFSETS[1], feces_st + CAPTURE_IDX_OFFSETS[2])
+                    print("[GPIO] feces_st 감지: idx=%s -> feces_st=%s (이후 idx=%s,%s,%s에서 슬롯 1,2,3 촬영)", idx, feces_st, feces_st + CAPTURE_IDX_OFFSETS[0], feces_st + CAPTURE_IDX_OFFSETS[1], feces_st + CAPTURE_IDX_OFFSETS[2])
                     time.sleep(0.5)
 
             # Feces 슬롯 1,2,3 촬영 시점 (idx == feces_st + CAPTURE_IDX_OFFSETS[0|1|2] 일 때, 기본 30/60/120)
@@ -546,6 +602,7 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
                 log.info("[GPIO] 측정 루프 종료 조건: idx=%s feces_st=%s end_tr=%s", idx, feces_st, end_tr)
                 break
             idx += 1
+
             # 진행 로그: 초반(1,5,10) 및 10샘플마다 stderr 출력 (idx 60 이후에도 70,80,90... 계속 출력되도록 idx<=60 제거)
             if idx == 1 or idx == 5 or idx == 10:
                 log.info("[GPIO] 루프 진행 idx=%s feces_st=%s H2S=%.4f VOCs=%.4f (정상 동작 중)", idx, feces_st, H2S_raw_ppm[-1] if H2S_raw_ppm else 0, VOCs_raw_ppm[-1] if VOCs_raw_ppm else 0)
@@ -603,8 +660,8 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
     h2s_baseline = calc_result.get("h2s_baseline_ppm", 0.0)
     vocs_baseline = calc_result.get("vocs_baseline_ppm", 0.0)
 
-    log.info("measure_sequence done: sort=%s time_sec=%.2f h2s_ppm=%.4f vocs_ppm=%.4f total_abs_exposure=%.4f",
-             n, time_sec, last_h2s, last_vocs, calc_result["total_abs_exposure"])
+    print("measure_sequence done: sort=%s time_sec=%.2f h2s_ppm=%.4f vocs_ppm=%.4f total_abs_exposure=%.4f",n, time_sec, last_h2s, last_vocs, calc_result["total_abs_exposure"])
+
     return {
         "gas_version": "GV.1.1",
         "h2s_abs_exposure": calc_result["h2s_abs_exposure"],

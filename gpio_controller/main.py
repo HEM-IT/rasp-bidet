@@ -274,23 +274,23 @@ def main():
 
     api_base = config.DATA_API_URL
     print(f"[SCENARIO] 6. gpio_controller: PWM fan → gas_controller + camera_controller (레거시 순서) | simulation={use_simulation}", file=sys.stderr)
-    # 디바이스 상태: ready → detecting → measuring → completed (8번: 진행 시마다 갱신)
-    if api_base:
-        try:
-            ensure_ready_then_set(api_base, gas_id, STATUS_DETECTING)
-            print("[SCENARIO] 7. Device status 갱신: detecting", file=sys.stderr)
-        except Exception as e:
-            print(f"[gpio_controller] device status ready/detecting 전송 실패: {e}", file=sys.stderr)
+    # 디바이스 상태: gas_controller 내부에서 detecting/measuring 갱신 (idx>BM_TIME, idx>=20)
+    # if api_base:
+    #     try:
+    #         ensure_ready_then_set(api_base, gas_id, STATUS_DETECTING)
+    #         print("[SCENARIO] 7. Device status 갱신: detecting", file=sys.stderr)
+    #     except Exception as e:
+    #         print(f"[gpio_controller] device status ready/detecting 전송 실패: {e}", file=sys.stderr)
 
     if use_simulation:
         # 시뮬레이션: 시계열 더미 가스 + 더미 이미지 분석 (4장 촬영/업로드 생략). 여기에는 time.sleep(1) 없음 → 즉시 진행.
         print("[gpio_controller] 시뮬레이션 모드: 더미 가스 + 더미 이미지 분석", file=sys.stderr)
-        if api_base:
-            try:
-                update_device_status(api_base, gas_id, STATUS_MEASURING)
-                print("[SCENARIO] 8. Device status 갱신: measuring", file=sys.stderr)
-            except Exception as e:
-                print(f"[gpio_controller] device status measuring 전송 실패: {e}", file=sys.stderr)
+        # if api_base:
+        #     try:
+        #         update_device_status(api_base, gas_id, STATUS_MEASURING)
+        #         print("[SCENARIO] 8. Device status 갱신: measuring", file=sys.stderr)
+        #     except Exception as e:
+        #         print(f"[gpio_controller] device status measuring 전송 실패: {e}", file=sys.stderr)
         gas_data = measure_sequence_simulation()
         print("[gpio_controller] gas_controller(시뮬) 완료", file=sys.stderr)
         record = process_sensor_data(gas_data, None)
@@ -317,11 +317,11 @@ def main():
         data_file_name = f"{gas_id}{test_id}"
         cwd = getattr(config, "GPIO_CONTROLLER_DIR", os.path.dirname(os.path.abspath(__file__)))
 
-        
-        print("[gpio_controller] [GPIO] 팬 PWM 시작 시도", file=sys.stderr)
-        pwm = fan_start()
-        print(f"[gpio_controller] [GPIO] 팬 PWM 결과: pwm={'OK' if pwm else 'None(실패)'}", file=sys.stderr)
-        time.sleep(1)  # 팬 안정화 대기 (실측 경로에서만 동작; 시뮬 경로에는 sleep 없음)
+        # 팬 제어: gas_controller.measure_sequence 내부에서 idx==0 시 fan_stop 후 ADC 진입 시 fan_start, idx>=20 시 fan_stop
+        # print("[gpio_controller] [GPIO] 팬 PWM 시작 시도", file=sys.stderr)
+        # pwm = fan_start()
+        # print(f"[gpio_controller] [GPIO] 팬 PWM 결과: pwm={'OK' if pwm else 'None(실패)'}", file=sys.stderr)
+        # time.sleep(1)  # 팬 안정화 대기 (실측 경로에서만 동작; 시뮬 경로에는 sleep 없음)
 
         try:
             SSD1306_DISPLAY(gas_id, test_id)
@@ -348,17 +348,15 @@ def main():
             print(f"[gpio_controller] [촬영] 슬롯 {slot} 촬영 완료. image_times len={len(image_times)}", file=sys.stderr)
 
         print("[gpio_controller] [GPIO] measure_sequence 진입 (가스 루프에서 feces_st 감지 시 슬롯 1,2,3 촬영)", file=sys.stderr)
-        gas_data = measure_sequence(
-            gas_id, test_id, capture_callback=_on_capture, simulation=False, pwm=pwm
-        )
+        gas_data = measure_sequence(gas_id, test_id, capture_callback=_on_capture, simulation=False, pwm=None, api_base=api_base)
 
-        if api_base:
-            try:
-                update_device_status(api_base, gas_id, STATUS_MEASURING)
-                print("[SCENARIO] 8. Device status 갱신: measuring", file=sys.stderr)
-            except Exception as e:
-                print(f"[gpio_controller] device status measuring 전송 실패: {e}", file=sys.stderr)
-                
+        # if api_base:
+        #     try:
+        #         update_device_status(api_base, gas_id, STATUS_MEASURING)
+        #         print("[SCENARIO] 8. Device status 갱신: measuring", file=sys.stderr)
+        #     except Exception as e:
+        #         print(f"[gpio_controller] device status measuring 전송 실패: {e}", file=sys.stderr)
+
         print(f"[gpio_controller] gas_controller(실측) 완료. 촬영된 슬롯 수: {len(image_times)} (image_times={image_times})", file=sys.stderr)
 
         # 7) 루프 종료 후 Reset_Display (ref MainCode 214-216행)
