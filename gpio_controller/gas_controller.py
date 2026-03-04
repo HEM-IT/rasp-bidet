@@ -37,11 +37,13 @@ try:
         update_device_status,
         STATUS_DETECTING,
         STATUS_MEASURING,
+        STATUS_FAIL,
     )
 except ImportError:
     ensure_ready_then_set = update_device_status = None
     STATUS_DETECTING = "detecting"
     STATUS_MEASURING = "measuring"
+    STATUS_FAIL = "fail"
 
 try:
     import numpy as np
@@ -164,39 +166,41 @@ def update_feces_st(idx, H2S_raw_ppm, noise_1_list, noise_5_list, feces_st, BM_t
             print(f"[gpio_controller] [update_feces_st] 조기반환: idx<=bm (idx={idx} bm={bm})", file=sys.stderr)
         return feces_st, noise_1_list, noise_5_list
 
-    # feces_st 판정 (인덱스 범위 검사: temp_stt는 append 직후이므로 len-1 이하여야 함)
-    if temp_stt >= len(noise_1_list) or temp_stt >= len(noise_5_list):
-        log.debug("update_feces_st: skip 판정 (noise_1 len=%s noise_5 len=%s temp_stt=%s)", len(noise_1_list), len(noise_5_list), temp_stt)
+    # append 직후 '현재' 값은 마지막 원소 (인덱스 len-1). temp_stt 기준이면 항상 skip되던 버그 수정.
+    cur_1 = len(noise_1_list) - 1
+    cur_5 = len(noise_5_list) - 1
+    if cur_1 < 0 or cur_5 < 0:
+        log.info("update_feces_st: skip 판정 (noise_1 len=%s noise_5 len=%s cur_1=%s cur_5=%s)", len(noise_1_list), len(noise_5_list), cur_1, cur_5)
         if idx % 10 == 0:
-            print(f"[gpio_controller] [update_feces_st] 조기반환: skip 판정 (temp_stt={temp_stt} len_n1={len(noise_1_list)} len_n5={len(noise_5_list)})", file=sys.stderr)
+            print(f"[gpio_controller] [update_feces_st] 조기반환: skip 판정 (cur_1={cur_1} cur_5={cur_5} len_n1={len(noise_1_list)} len_n5={len(noise_5_list)})", file=sys.stderr)
         return feces_st, noise_1_list, noise_5_list
 
     slice_n1 = noise_1_list[0 : temp_stt - 2]
     max_n1_prev = max(slice_n1) if len(slice_n1) > 0 else 0
     if max_n1_prev > 0.006:
-        if noise_1_list[temp_stt] > max_n1_prev * 1.2:
+        if noise_1_list[cur_1] > max_n1_prev * 1.2:
             feces_st = idx - 2
     else:
-        if noise_1_list[temp_stt] > NOISE_1_THRESHOLD:
+        if noise_1_list[cur_1] > NOISE_1_THRESHOLD:
             feces_st = temp_stt - 2
 
-    slice_n5 = noise_5_list[0 : temp_stt - 2]
+    slice_n5 = noise_5_list[0:cur_5]
     max_n5_prev = max(slice_n5) if len(slice_n5) > 0 else 0
     if max_n5_prev > NOISE_5_THRESHOLD_HIGH:
-        if noise_5_list[temp_stt] > max_n5_prev * 1.2:
+        if noise_5_list[cur_5] > max_n5_prev * 1.2:
             feces_st = idx - 2
     else:
-        if noise_5_list[temp_stt] > NOISE_5_THRESHOLD:
+        if noise_5_list[cur_5] > NOISE_5_THRESHOLD:
             feces_st = idx - 2
 
     if feces_st != 0:
-        log.info("update_feces_st: feces_st detected idx=%s -> feces_st=%s (noise_1=%.4f noise_5=%.4f)", idx, feces_st, noise_1_list[temp_stt], noise_5_list[temp_stt] if temp_stt < len(noise_5_list) else 0)
-        n1_val = noise_1_list[temp_stt]
-        n5_val = noise_5_list[temp_stt] if temp_stt < len(noise_5_list) else 0
+        log.info("update_feces_st: feces_st detected idx=%s -> feces_st=%s (noise_1=%.4f noise_5=%.4f)", idx, feces_st, noise_1_list[cur_1], noise_5_list[cur_5])
+        n1_val = noise_1_list[cur_1]
+        n5_val = noise_5_list[cur_5]
         print(f"[gpio_controller] [update_feces_st] 감지됨 idx={idx} -> feces_st={feces_st} (noise_1={n1_val:.4f} noise_5={n5_val:.4f})", file=sys.stderr)
     elif idx % 10 == 0:
-        n1 = noise_1_list[temp_stt] if temp_stt < len(noise_1_list) else 0
-        n5 = noise_5_list[temp_stt] if temp_stt < len(noise_5_list) else 0
+        n1 = noise_1_list[cur_1]
+        n5 = noise_5_list[cur_5]
         print(f"[gpio_controller] [update_feces_st] 판정 후 유지 idx={idx} feces_st=0 (noise_1={n1:.4f} noise_5={n5:.4f}, 임계값 n1>{NOISE_1_THRESHOLD} n5>{NOISE_5_THRESHOLD})", file=sys.stderr)
     return feces_st, noise_1_list, noise_5_list
 
@@ -531,6 +535,8 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
                         ensure_ready_then_set(api_base, gas_id, STATUS_DETECTING)
                         log.info("[GPIO] Device status 갱신: detecting (idx>BM_TIME)")
                         print("[SCENARIO] 7. Device status 갱신: detecting (gas_controller)", file=sys.stderr)
+                        # INSERT_YOUR_CODE
+                        time.sleep(8)
                     except Exception as e:
                         log.warning("[GPIO] device status detecting 전송 실패: %s", e)
                 status_detecting_sent = True
@@ -591,6 +597,13 @@ def measure_sequence(gas_id, test_id, capture_callback=None, simulation=False, p
                         log.info("[GPIO] 캡처 요청 slot=%s idx=%s (feces_st+offset=%s) image_time=%s", slot_one_based, idx, offset, image_time_str)
                         capture_callback(slot_one_based, data_file_name, image_time_str)
                         break
+            else:
+                if api_base and update_device_status is not None:
+                    try:
+                        update_device_status(api_base, gas_id, STATUS_FAIL)
+                        log.info("[GPIO] Device status 갱신: fail (캡처 시점 slot=%s)", slot_one_based)
+                    except Exception as e:
+                        log.warning("[GPIO] device status fail 전송 실패: %s", e)
 
             end_time = time.time()
             if idx == 0:

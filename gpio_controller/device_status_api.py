@@ -13,11 +13,12 @@ import ssl
 
 import config
 
-# 상태 순서: ready → detecting → measuring → completed
+# 상태 순서: ready → detecting → measuring → completed (캡처 시점에 fail 사용)
 STATUS_READY = "ready"
 STATUS_DETECTING = "detecting"
 STATUS_MEASURING = "measuring"
 STATUS_COMPLETED = "completed"
+STATUS_FAIL = "fail"
 
 
 def _request(method, url, body=None, timeout=10):
